@@ -87,19 +87,19 @@ public enum ContentExtractor {
     // Hard limits, kept together so they're easy to tune. Files over a limit
     // return no text with an explanatory message rather than being read.
     private static let plainTextMaxBytes: UInt64 = 100 * 1024 * 1024
-    private static let pdfMaxBytes: UInt64 = 100 * 1024 * 1024
+    static let pdfMaxBytes: UInt64 = 100 * 1024 * 1024
     private static let pdfMaxPages = 100
     private static let pdfOCRMaxPages = 20
-    private static let pdfOCRRenderScale: CGFloat = 2.0
-    private static let ocrImageMaxBytes: UInt64 = 25 * 1024 * 1024
-    private static let ocrMaxDimension = 12_000
+    static let pdfOCRRenderScale: CGFloat = 2.0
+    static let ocrImageMaxBytes: UInt64 = 25 * 1024 * 1024
+    static let ocrMaxDimension = 12_000
     private static let defaultMaxBytes: UInt64 = 100 * 1024 * 1024
 
     private static let plainTextExtensions: Set<String> = [
         "txt", "md", "csv", "tsv", "json", "xml", "yaml", "yml", "html", "css",
         "js", "ts", "swift", "rs", "py", "rb", "go", "java", "c", "cpp", "h", "log",
     ]
-    private static let imageExtensions: Set<String> = [
+    static let imageExtensions: Set<String> = [
         "png", "jpg", "jpeg", "heic", "tiff", "tif",
         "webp", "gif", "bmp", "jp2", "j2k", "psd",
     ]
@@ -298,10 +298,10 @@ public enum ContentExtractor {
     }
 
     /// Renders a PDF page to a bitmap `CGImage` for OCR, scaled up for accuracy.
-    private static func renderPDFPage(_ page: PDFPage) -> CGImage? {
+    static func renderPDFPage(_ page: PDFPage, scale: CGFloat = pdfOCRRenderScale) -> CGImage? {
         let bounds = page.bounds(for: .mediaBox)
-        let width = Int(bounds.width * pdfOCRRenderScale)
-        let height = Int(bounds.height * pdfOCRRenderScale)
+        let width = Int(bounds.width * scale)
+        let height = Int(bounds.height * scale)
         guard width > 0, height > 0,
               let context = CGContext(
                 data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
@@ -310,7 +310,7 @@ public enum ContentExtractor {
         // White background so OCR sees dark-on-light text.
         context.setFillColor(gray: 1, alpha: 1)
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        context.scaleBy(x: pdfOCRRenderScale, y: pdfOCRRenderScale)
+        context.scaleBy(x: scale, y: scale)
         context.translateBy(x: -bounds.origin.x, y: -bounds.origin.y)
         page.draw(with: .mediaBox, to: context)
         return context.makeImage()
@@ -534,6 +534,44 @@ public enum ContentExtractor {
         }
         _ = semaphore.wait(timeout: .now() + 30)
         return resultText
+    }
+
+    /// Like `recognizeText`, but keeps each line separate with Vision's
+    /// confidence, in reading order (top to bottom, then left to right), so
+    /// document fields can tell a label's line from the value under it.
+    /// `nil` when OCR is unavailable or times out.
+    static func recognizeLines(in cgImage: CGImage) -> [DocumentTextLine]? {
+        nonisolated(unsafe) let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        // Forms are rarely in English only; let Vision pick the language.
+        request.automaticallyDetectsLanguage = true
+        nonisolated(unsafe) let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+
+        let semaphore = DispatchSemaphore(value: 0)
+        // Same reasoning as `recognizeText`: the wait below serializes access.
+        nonisolated(unsafe) var resultLines: [DocumentTextLine]?
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard (try? handler.perform([request])) != nil, let observations = request.results else {
+                semaphore.signal()
+                return
+            }
+            // Observations on the same visual row (within ~1% of the page
+            // height) are ordered left to right; rows top to bottom.
+            let ordered = observations.sorted { lhs, rhs in
+                if abs(lhs.boundingBox.midY - rhs.boundingBox.midY) > 0.012 {
+                    return lhs.boundingBox.midY > rhs.boundingBox.midY
+                }
+                return lhs.boundingBox.minX < rhs.boundingBox.minX
+            }
+            resultLines = ordered.compactMap { observation in
+                guard let candidate = observation.topCandidates(1).first else { return nil }
+                return DocumentTextLine(text: candidate.string, confidence: Double(candidate.confidence))
+            }
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 30)
+        return resultLines
     }
 
     // MARK: - Helpers

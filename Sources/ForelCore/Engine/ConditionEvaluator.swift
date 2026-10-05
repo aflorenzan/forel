@@ -19,7 +19,9 @@ import Darwin
 
 public enum ConditionEvaluator {
     /// Returns true if the file at `path` satisfies the condition.
-    public static func evaluate(_ condition: Condition, path: String, allowOCR: Bool = true) -> Bool {
+    /// `siblings` are the other conditions of the same rule; document fields
+    /// use them to tell their label from the other labels on the form.
+    public static func evaluate(_ condition: Condition, path: String, allowOCR: Bool = true, siblings: [Condition] = []) -> Bool {
         let url = URL(fileURLWithPath: path)
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
 
@@ -106,6 +108,57 @@ public enum ConditionEvaluator {
 
         case .rawWhereFromMetadata:
             return matchAnyOf(condition.operator, DownloadMetadata.whereFroms(path), condition.value)
+
+        case .folderPath:
+            return matchFolderPath(condition.operator, path: path, condition.value)
+
+        case .documentField:
+            return evaluateDocumentField(condition, path: path, allowOCR: allowOCR, siblings: siblings).matched
+        }
+    }
+
+    /// Evaluates a `document_field` condition, returning the match together
+    /// with a short explanation for the Dry Run: the value that was read, or
+    /// why none was. `is not found` is the exact negation of `is found`, so it
+    /// also matches files with no readable text at all.
+    static func evaluateDocumentField(_ condition: Condition, path: String, allowOCR: Bool = true, siblings: [Condition] = []) -> (matched: Bool, detail: String) {
+        guard let spec = DocumentFieldSpec.decode(condition.value) else {
+            return (false, "Document field settings are invalid.")
+        }
+        let otherLabels = DocumentFieldExtractor.otherLabels(for: spec, siblings: siblings)
+        let lookup = DocumentFieldExtractor.lookup(spec, otherLabels: otherLabels, path: path, allowOCR: allowOCR)
+        let found: Bool
+        let detail: String
+        switch lookup {
+        case .found(let value):
+            found = true
+            let percent = Int((value.confidence * 100).rounded())
+            let token = spec.token.isEmpty ? "Value" : "{\(spec.token)}"
+            detail = "\(token) = \(value.text) (\(percent)% confidence)"
+        case .notFound(let reason):
+            found = false
+            detail = reason
+        }
+        switch condition.operator {
+        case .isFound: return (found, detail)
+        case .isNotFound: return (!found, detail)
+        default: return (false, detail)
+        }
+    }
+
+    /// Matches the folder that contains the file. A leading `~` in the value
+    /// means the home folder; `is`/`is not` compare standardized paths so a
+    /// trailing slash doesn't matter.
+    private static func matchFolderPath(_ operator_: Operator, path: String, _ value: String) -> Bool {
+        let folder = ((path as NSString).deletingLastPathComponent as NSString).standardizingPath
+        let needle = value.hasPrefix("~") ? (value as NSString).expandingTildeInPath : value
+        switch operator_ {
+        case .is:
+            return folder == (needle as NSString).standardizingPath
+        case .isNot:
+            return folder != (needle as NSString).standardizingPath
+        default:
+            return matchString(operator_, folder, needle)
         }
     }
 

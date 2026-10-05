@@ -76,6 +76,8 @@ public enum ConditionKind: String, Codable, Equatable, Sendable {
     case downloadedFromWebsite = "downloaded_from_website"
     case downloadedWithApp = "downloaded_with_app"
     case rawWhereFromMetadata = "raw_where_from_metadata"
+    case folderPath = "folder_path"
+    case documentField = "document_field"
 
     public init(dbValue: String) {
         self = ConditionKind(rawValue: dbValue) ?? .name
@@ -96,6 +98,8 @@ public enum Operator: String, Codable, Equatable, Sendable {
     case after
     case olderThan = "older_than"
     case withinLast = "within_last"
+    case isFound = "is_found"
+    case isNotFound = "is_not_found"
 
     public init(dbValue: String) {
         self = Operator(rawValue: dbValue) ?? .is

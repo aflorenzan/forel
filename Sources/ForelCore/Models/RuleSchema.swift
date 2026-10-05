@@ -46,6 +46,8 @@ public extension Operator {
         case .after: return "is after"
         case .olderThan: return "is not in the last"
         case .withinLast: return "is within the last"
+        case .isFound: return "is found"
+        case .isNotFound: return "is not found"
         }
     }
 
@@ -73,6 +75,8 @@ public enum ConditionValueKind: Sendable, Equatable {
     /// Free text combined with a suggestion list (e.g. installed apps) —
     /// still a plain string value underneath, just with autocomplete.
     case appPicker
+    /// A `DocumentFieldSpec` (label, token, type…) stored as JSON.
+    case documentField
 }
 
 // MARK: - Condition kinds
@@ -93,6 +97,8 @@ public extension ConditionKind {
         case .downloadedFromWebsite: return "Downloaded from website"
         case .downloadedWithApp: return "Downloaded with app"
         case .rawWhereFromMetadata: return "Raw where-from metadata"
+        case .folderPath: return "Folder path"
+        case .documentField: return "Document field"
         }
     }
 
@@ -107,11 +113,13 @@ public extension ConditionKind {
             return [.is, .isNot, .greaterThan, .lessThan]
         case .kind, .colorLabel:
             return [.is, .isNot]
-        case .name, .extension_, .tags, .contents,
+        case .name, .extension_, .tags, .contents, .folderPath,
              .downloadedFromWebsite, .rawWhereFromMetadata:
             return [.is, .isNot, .contains, .doesNotContain, .startsWith, .endsWith, .matchesRegex]
         case .downloadedWithApp:
             return [.is]
+        case .documentField:
+            return [.isFound, .isNotFound]
         }
     }
 
@@ -127,9 +135,10 @@ public extension ConditionKind {
         case .sizeBytes: return .size
         case .colorLabel: return .colorLabel
         case .createdAt, .dateModified, .dateAdded: return .absoluteDate
-        case .name, .extension_, .tags, .contents,
+        case .name, .extension_, .tags, .contents, .folderPath,
              .downloadedFromWebsite, .rawWhereFromMetadata: return .text
         case .downloadedWithApp: return .appPicker
+        case .documentField: return .documentField
         }
     }
 
@@ -149,6 +158,8 @@ public extension ConditionKind {
         case .downloadedFromWebsite: return "globe"
         case .downloadedWithApp: return "macwindow"
         case .rawWhereFromMetadata: return "curlybraces"
+        case .folderPath: return "folder"
+        case .documentField: return "text.magnifyingglass"
         }
     }
 
@@ -161,9 +172,20 @@ public extension ConditionKind {
             return "Uses macOS download metadata. Availability depends on the app that created the file."
         case .contents:
             return "Matches text from plain files, PDFs, Word documents, and images via OCR when available."
+        case .folderPath:
+            return "Matches the full path of the folder that contains the file, e.g. to leave files that were already sorted into a subfolder alone."
+        case .documentField:
+            return "Reads the value printed next to or under a label on a form (PDFs and images via OCR). Use its {token} in Rename patterns and Move/Copy destinations."
         default:
             return nil
         }
+    }
+
+    /// The condition's value as shown in the rule list and Dry Run. Only
+    /// document fields differ: their stored JSON is summarized.
+    func displayValue(_ value: String) -> String {
+        guard self == .documentField else { return value }
+        return DocumentFieldSpec.decode(value)?.summary ?? value
     }
 }
 
@@ -205,6 +227,8 @@ public enum ActionParam {
     public static let cleanFileName = "clean_file_name"
     public static let libraryType = "library_type"
     public static let targetPlaylist = "target_playlist"
+    /// Move/Copy: compare SHA-256 checksums before and after.
+    public static let verifyChecksum = "verify_checksum"
 }
 
 /// The abstract shape of an action parameter; the UI maps it to a concrete editor.
@@ -339,7 +363,10 @@ public enum RuleSchema {
     public static let conditionKindGroups: [ConditionKindGroup] = [
         ConditionKindGroup(title: nil, kinds: [
             .name, .extension_, .kind, .sizeBytes, .tags, .colorLabel, .contents,
-            .createdAt, .dateModified, .dateAdded,
+            .createdAt, .dateModified, .dateAdded, .folderPath,
+        ]),
+        ConditionKindGroup(title: "Documents", kinds: [
+            .documentField,
         ]),
         ConditionKindGroup(title: "Metadata", kinds: [
             .downloadedFromWebsite, .downloadedWithApp,

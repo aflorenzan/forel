@@ -39,6 +39,19 @@ import Foundation
         #expect(issues.count == 2)
     }
 
+    @Test func documentFieldNeedsALabelAndAUniqueUsableToken() {
+        func field(_ label: String, _ token: String) -> Condition {
+            makeCondition(.documentField, .isFound, DocumentFieldSpec(label: label, token: token).encoded())
+        }
+        #expect(RuleValidator.validate([field("Contract", "contract"), field("User", "user")]).isEmpty)
+        #expect(RuleValidator.validate([field(" ", "contract")]) == [.init(message: "Document field label cannot be empty")])
+        #expect(RuleValidator.validate([field("Contract", "my contract")]) == [.init(message: "Document field token must start with a letter and use only letters, digits, or _")])
+        #expect(RuleValidator.validate([field("Contract", "name")]) == [.init(message: "Document field token {name} is already a built-in token")])
+        #expect(RuleValidator.validate([field("Year", "year")]) == [.init(message: "Document field token {year} is already a built-in token")])
+        #expect(RuleValidator.validate([field("Contract", "x"), field("User", "x")]) == [.init(message: "Document field token {x} is used more than once")])
+        #expect(RuleValidator.validate([makeCondition(.documentField, .isFound, "Contract")]) == [.init(message: "Document field settings are invalid")])
+    }
+
     // MARK: - Actions
 
     @Test func moveToFolderWithValidDestinationProducesNoIssues() {

@@ -9,6 +9,10 @@ All notable changes to Forel are documented here. Format loosely follows
 - Copy one or more rules to another watched folder without recreating their conditions and actions.
 - Date conditions now support hours, with an "is not in the last" option for excluding recently added, created, or modified files.
 - Move to folder and Copy to folder destinations now accept {year}, {month}, and {day} date tokens (e.g. ~/Archive/{year}/{month}), resolved from each file's creation date. The destination field can now also be typed into.
+- Document field condition: reads the value next to or under a label on a form (text, person name, or date), tolerating accents, capitalization, and small OCR mistakes. Filled and scanned PDFs and images are read with on-device OCR in Pro; Free reads the PDF text layer and other documents. The Dry Run shows each value read, or why none was found.
+- Rename patterns and Move/Copy destinations can use document field values as tokens (e.g. ~/Forms/{contract}), with custom date formats such as `{date:yyyyMMdd}`.
+- Move and Copy can verify the transferred file with a SHA-256 checksum, undoing the transfer on a mismatch and recording the checksum in the activity history.
+- Folder path condition, e.g. to leave files that were already sorted into a subfolder alone.
 
 ### Fixed
 - Symbolic links to folders no longer cause automatic rules to process files outside the watched folder.

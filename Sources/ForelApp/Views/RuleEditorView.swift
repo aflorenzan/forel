@@ -110,7 +110,7 @@ struct RuleEditorView: View {
                                 placeholder("No actions yet — add at least one to make this rule do something.")
                             }
                             ForEach($rule.actions, id: \.id) { $action in
-                                ActionRow(action: $action, onRequestUpgrade: { upgradeContext = .feature($0) }) {
+                                ActionRow(action: $action, onRequestUpgrade: { upgradeContext = .feature($0) }, fieldTokens: documentFieldTokens) {
                                     rule.actions.removeAll { $0.id == action.id }
                                 }
                             }
@@ -160,6 +160,15 @@ struct RuleEditorView: View {
         .background(ForelTheme.background)
         .background(WindowActivationBridge(showsDockIcon: model.showDockIcon))
         .sheet(item: $upgradeContext) { context in ProUpgradeView(context: context) }
+    }
+
+    /// Tokens defined by this rule's document field conditions, offered to
+    /// its actions (rename chips, destination hint).
+    private var documentFieldTokens: [String] {
+        rule.conditions
+            .filter { $0.kind == .documentField }
+            .compactMap { DocumentFieldSpec.decode($0.value)?.token }
+            .filter { DocumentFieldSpec.isValidTokenName($0) }
     }
 
     private var conditionIssues: [RuleValidator.Issue] {
@@ -389,7 +398,9 @@ private struct ConditionRow: View {
         case .regex:
             RegexValueEditor(value: $condition.value)
         case .text:
-            GlassField(placeholder: "Value", text: $condition.value)
+            GlassField(placeholder: condition.kind == .folderPath ? "Folder path, e.g. ~/Downloads/Sorted" : "Value", text: $condition.value)
+        case .documentField:
+            DocumentFieldEditor(value: $condition.value)
         }
     }
 
@@ -438,6 +449,7 @@ private struct ConditionRow: View {
         case .size: return "0 MB"
         case .absoluteDate:
             return operator_.usesRelativeDateValue ? "7 days" : DateValueFormatter.string(from: Date())
+        case .documentField: return DocumentFieldSpec().encoded()
         default: return ""
         }
     }
@@ -594,6 +606,157 @@ private struct RuleSelectMenu<Content: View>: View {
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(ForelTheme.surfaceBorder))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Editor for a Document field condition: the label printed on the form, the
+/// kind of value next to it, and the token the rule's actions use. The less
+/// common settings (other labels on the form, OCR confidence) sit behind an
+/// options popover, like action options.
+private struct DocumentFieldEditor: View {
+    @Binding var value: String
+    @State private var showingOptions = false
+
+    private var spec: DocumentFieldSpec {
+        DocumentFieldSpec.decode(value) ?? DocumentFieldSpec()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            GlassField(placeholder: "Label on the form, e.g. Contract name", text: labelBinding)
+            HStack(spacing: 6) {
+                StringSelectMenu(
+                    selection: typeBinding,
+                    options: DocumentFieldType.allCases.map(\.rawValue),
+                    label: { DocumentFieldType(rawValue: $0)?.label ?? $0 }
+                )
+                .frame(width: 130)
+
+                Text("as")
+                    .font(.system(size: 11))
+                    .foregroundStyle(ForelTheme.secondaryText)
+
+                GlassField(placeholder: "token, e.g. contract", text: tokenBinding)
+
+                Button {
+                    showingOptions.toggle()
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .buttonStyle(IconButtonStyle())
+                .help("Field options")
+                .popover(isPresented: $showingOptions, arrowEdge: .bottom) {
+                    DocumentFieldOptionsView(value: $value)
+                        .padding(14)
+                        .frame(width: 300)
+                }
+            }
+        }
+    }
+
+    private func update(_ change: (inout DocumentFieldSpec) -> Void) {
+        var updated = spec
+        change(&updated)
+        value = updated.encoded()
+    }
+
+    private var labelBinding: Binding<String> {
+        Binding(
+            get: { spec.label },
+            set: { newValue in update { $0.label = newValue } }
+        )
+    }
+
+    /// Accepts `{token}` too, since that's how it's written in actions.
+    private var tokenBinding: Binding<String> {
+        Binding(
+            get: { spec.token },
+            set: { newValue in
+                let cleaned = newValue.filter { $0 != "{" && $0 != "}" && !$0.isWhitespace }
+                update { $0.token = cleaned }
+            }
+        )
+    }
+
+    private var typeBinding: Binding<String> {
+        Binding(
+            get: { spec.type.rawValue },
+            set: { newValue in update { $0.type = DocumentFieldType(rawValue: newValue) ?? .text } }
+        )
+    }
+}
+
+private struct DocumentFieldOptionsView: View {
+    @Binding var value: String
+    /// Edited as typed (so a trailing comma survives) and saved as a list.
+    @State private var otherLabelsDraft: String
+
+    init(value: Binding<String>) {
+        _value = value
+        let spec = DocumentFieldSpec.decode(value.wrappedValue) ?? DocumentFieldSpec()
+        _otherLabelsDraft = State(initialValue: spec.otherLabels.joined(separator: ", "))
+    }
+
+    private var spec: DocumentFieldSpec {
+        DocumentFieldSpec.decode(value) ?? DocumentFieldSpec()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Field options")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(ForelTheme.primaryText)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Other labels on this form")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(ForelTheme.secondaryText)
+                GlassField(placeholder: "Comma-separated, e.g. Phone, E-mail", text: otherLabelsBinding)
+                Text("A line that looks like one of these is never taken as this field's value — useful when the field is left empty on the form. Labels of the rule's other document fields are included automatically.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(ForelTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Minimum OCR confidence: \(Int((spec.minConfidence * 100).rounded()))%")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(ForelTheme.secondaryText)
+                Slider(value: confidenceBinding, in: 0...1, step: 0.05)
+                    .tint(ForelTheme.accent)
+                Text("A value read with less confidence doesn't count as found, unless the PDF's text layer contains it too. 0% turns the check off.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(ForelTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func update(_ change: (inout DocumentFieldSpec) -> Void) {
+        var updated = spec
+        change(&updated)
+        value = updated.encoded()
+    }
+
+    private var otherLabelsBinding: Binding<String> {
+        Binding(
+            get: { otherLabelsDraft },
+            set: { newValue in
+                otherLabelsDraft = newValue
+                let labels = newValue
+                    .split(whereSeparator: { $0 == "," || $0.isNewline })
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                update { $0.otherLabels = labels }
+            }
+        )
+    }
+
+    private var confidenceBinding: Binding<Double> {
+        Binding(
+            get: { spec.minConfidence },
+            set: { newValue in update { $0.minConfidence = newValue } }
+        )
     }
 }
 
@@ -836,6 +999,8 @@ private struct ActionRow: View {
     @Binding var action: Action
     @EnvironmentObject private var model: AppModel
     let onRequestUpgrade: (ProFeature) -> Void
+    /// Tokens of the rule's document fields, offered in Rename and destinations.
+    let fieldTokens: [String]
     let onDelete: () -> Void
     @State private var showingOptions = false
 
@@ -891,10 +1056,10 @@ private struct ActionRow: View {
             FolderField(
                 placeholder: "Destination folder",
                 path: paramBinding(ActionParam.destination),
-                hint: "Add {year}, {month}, or {day} for dated folders, e.g. …/Archive/{year}/{month}"
+                hint: destinationHint
             )
         case .rename:
-            RenamePatternEditor(pattern: paramBinding(ActionParam.pattern), cleanFileName: action.params[ActionParam.cleanFileName]?.boolValue == true)
+            RenamePatternEditor(pattern: paramBinding(ActionParam.pattern), cleanFileName: action.params[ActionParam.cleanFileName]?.boolValue == true, fieldTokens: fieldTokens)
         case .addTag, .removeTag:
             TagTokensEditor(tags: tagsBinding, placeholder: action.kind == .addTag ? "Add tag" : "Tag")
         case .setColorLabel:
@@ -970,6 +1135,15 @@ private struct ActionRow: View {
         )
     }
 
+    /// Date tokens always; the rule's document fields when it has any.
+    private var destinationHint: String {
+        guard !fieldTokens.isEmpty else {
+            return "Add {year}, {month}, or {day} for dated folders, e.g. …/Archive/{year}/{month}"
+        }
+        let fields = fieldTokens.map { "{\($0)}" }.joined(separator: ", ")
+        return "Add {year}, {month}, {day}, or a document field (\(fields)), e.g. …/Forms/{\(fieldTokens[0])}"
+    }
+
     private func paramBinding(_ key: String, defaultValue: String = "") -> Binding<String> {
         Binding(
             get: { action.params[key]?.stringValue ?? defaultValue },
@@ -1022,7 +1196,10 @@ private struct ActionOptionsView: View {
                 shortcutOptions
             case .openApplication:
                 openApplicationOptions
-            case .moveToFolder, .copyToFolder, .importToLibrary, .uncompress:
+            case .moveToFolder, .copyToFolder:
+                conflictResolutionOptions
+                transferOptions
+            case .importToLibrary, .uncompress:
                 conflictResolutionOptions
             case .rename:
                 renameOptions
@@ -1063,6 +1240,37 @@ private struct ActionOptionsView: View {
             )
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Move/Copy only: checksum verification.
+    private var transferOptions: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: verifyChecksumBinding) {
+                Text("Verify with SHA-256")
+                    .font(.system(size: 12))
+                    .foregroundStyle(ForelTheme.primaryText)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            Text(action.kind == .moveToFolder
+                 ? "Compares checksums after moving. On a mismatch the file is put back and the action fails."
+                 : "Compares checksums after copying. On a mismatch the copy is removed and the action fails.")
+                .font(.system(size: 10))
+                .foregroundStyle(ForelTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var verifyChecksumBinding: Binding<Bool> {
+        Binding(
+            get: { ActionExecutor.verifiesChecksum(action) },
+            set: { newValue in
+                var dict: [String: JSONValue] = [:]
+                if case .object(let existing) = action.params { dict = existing }
+                dict[ActionParam.verifyChecksum] = .bool(newValue)
+                action.params = .object(dict)
+            }
+        )
     }
 
     private var shortcutOptions: some View {
@@ -1371,6 +1579,12 @@ private struct TagTokensEditor: View {
 private struct RenamePatternEditor: View {
     @Binding var pattern: String
     let cleanFileName: Bool
+    /// The rule's document field tokens, offered as extra chips.
+    var fieldTokens: [String] = []
+
+    private var allTokens: [(placeholder: String, label: String)] {
+        tokens + fieldTokens.map { (placeholder: "{\($0)}", label: $0) }
+    }
 
     private let tokens: [(placeholder: String, label: String)] = [
         ("{name}", "name"),
@@ -1387,7 +1601,7 @@ private struct RenamePatternEditor: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    ForEach(tokens, id: \.placeholder) { token in
+                    ForEach(allTokens, id: \.placeholder) { token in
                         tokenButton(token)
                     }
                     Spacer(minLength: 0)

@@ -25,7 +25,8 @@ public enum RuleValidator {
     }
 
     public static func validate(_ conditions: [Condition]) -> [Issue] {
-        conditions.compactMap { condition in
+        var seenTokens: Set<String> = []
+        return conditions.compactMap { condition in
             if condition.value.trimmingCharacters(in: .whitespaces).isEmpty {
                 return Issue(message: "Condition value cannot be empty")
             }
@@ -33,8 +34,33 @@ public enum RuleValidator {
                (try? NSRegularExpression(pattern: condition.value)) == nil {
                 return Issue(message: "Regex pattern is invalid")
             }
+            if condition.kind == .documentField {
+                return documentFieldIssue(condition, seenTokens: &seenTokens)
+            }
             return nil
         }
+    }
+
+    private static func documentFieldIssue(_ condition: Condition, seenTokens: inout Set<String>) -> Issue? {
+        guard let spec = DocumentFieldSpec.decode(condition.value) else {
+            return Issue(message: "Document field settings are invalid")
+        }
+        if spec.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return Issue(message: "Document field label cannot be empty")
+        }
+        guard DocumentFieldSpec.isValidTokenName(spec.token) else {
+            return Issue(message: "Document field token must start with a letter and use only letters, digits, or _")
+        }
+        if DocumentFieldSpec.reservedTokens.contains(spec.token) {
+            return Issue(message: "Document field token {\(spec.token)} is already a built-in rename token")
+        }
+        if !seenTokens.insert(spec.token).inserted {
+            return Issue(message: "Document field token {\(spec.token)} is used more than once")
+        }
+        if !(0...1).contains(spec.minConfidence) {
+            return Issue(message: "Document field minimum confidence must be between 0% and 100%")
+        }
+        return nil
     }
 
     public static func validate(_ actions: [Action]) -> [Issue] {

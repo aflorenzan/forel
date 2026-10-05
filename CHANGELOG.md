@@ -3,6 +3,15 @@
 All notable changes to Forel are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- Document field condition: reads the value next to or under a label on a form (text, person name, or date), including filled and scanned PDFs via on-device OCR, tolerating accents, capitalization, and small OCR mistakes. The Dry Run shows each value read, or why none was found.
+- Rename patterns can use document field values as tokens, with custom date formats such as `{date:yyyyMMdd}`.
+- Move and Copy can sort files into a subfolder named from document field values, created as needed.
+- Move and Copy can verify the transferred file with a SHA-256 checksum, undoing the transfer on a mismatch and recording the checksum in the activity history.
+- Folder path condition, e.g. to leave files that were already sorted into a subfolder alone.
+
 ## [1.0.9] - 2026-10-02
 
 ### Fixed

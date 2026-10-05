@@ -384,7 +384,7 @@ private struct RuleDetails: View {
             RuleDetailRow(
                 icon: condition.kind.iconSystemName,
                 badge: condition.kind.label,
-                title: "\(condition.operator.label) \(condition.value)",
+                title: "\(condition.operator.label) \(condition.kind.displayValue(condition.value))",
                 detail: nil
             )
         }
@@ -467,10 +467,8 @@ private struct RuleDetails: View {
 
     private func actionSummary(_ action: Action) -> (title: String, detail: String?) {
         switch action.kind {
-        case .moveToFolder:
-            return ("to folder", action.params[ActionParam.destination]?.stringValue)
-        case .copyToFolder:
-            return ("to folder", action.params[ActionParam.destination]?.stringValue)
+        case .moveToFolder, .copyToFolder:
+            return ("to folder", transferDetail(action))
         case .rename:
             return ("to \(action.params[ActionParam.pattern]?.stringValue ?? "")", action.params[ActionParam.cleanFileName]?.boolValue == true ? "clean file name" : nil)
         case .moveToTrash:
@@ -503,6 +501,20 @@ private struct RuleDetails: View {
         case .uncompress:
             return ("uncompress ZIP", MoveConflictResolution(rawValue: action.params[ActionParam.onConflict]?.stringValue ?? "")?.label)
         }
+    }
+
+    /// Destination plus the Move/Copy options that change where or how the
+    /// file lands (subfolder pattern, checksum verification).
+    private func transferDetail(_ action: Action) -> String? {
+        guard var detail = action.params[ActionParam.destination]?.stringValue else { return nil }
+        if let subfolder = action.params[ActionParam.subfolder]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !subfolder.isEmpty {
+            detail = (detail as NSString).appendingPathComponent(subfolder)
+        }
+        if ActionExecutor.verifiesChecksum(action) {
+            detail += " · SHA-256 verified"
+        }
+        return detail
     }
 
     private func tagList(_ action: Action) -> String {
@@ -681,7 +693,7 @@ private struct PreviewSheet: View {
 
 private extension ConditionPreview {
     var label: String {
-        "\(kind.label) \(`operator_`.label) \(value)"
+        "\(kind.label) \(`operator_`.label) \(kind.displayValue(value))"
     }
 }
 

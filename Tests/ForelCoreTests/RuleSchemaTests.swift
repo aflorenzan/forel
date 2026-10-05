@@ -66,6 +66,9 @@ import Foundation
         #expect(RuleSchema.valueKind(for: .downloadedWithApp, operator: .is) == .appPicker)
         // The remaining user-facing metadata kind stays plain text.
         #expect(RuleSchema.valueKind(for: .downloadedFromWebsite, operator: .is) == .text)
+        #expect(RuleSchema.valueKind(for: .folderPath, operator: .startsWith) == .text)
+        // Document fields have their own structured editor.
+        #expect(RuleSchema.valueKind(for: .documentField, operator: .isFound) == .documentField)
     }
 
     // MARK: - Engine handles every declared operator
@@ -194,6 +197,36 @@ import Foundation
             for (op, value) in fixtures {
                 #expect(ConditionEvaluator.evaluate(makeCondition(kind, op, value), path: file), "\(kind) \(op) should match")
             }
+        }
+    }
+
+    @Test func folderPathMatchesEveryDeclaredOperator() throws {
+        let dir = TempDir()
+        let inbox = dir.dir("Inbox")
+        let file = (inbox as NSString).appendingPathComponent("note.txt")
+        try "x".write(toFile: file, atomically: true, encoding: .utf8)
+
+        let fixtures: [Operator: String] = [
+            .is: inbox, .isNot: dir.path, .contains: "/Inbox", .doesNotContain: "Outbox",
+            .startsWith: dir.path, .endsWith: "Inbox", .matchesRegex: "Inbox$",
+        ]
+        assertExhaustive(.folderPath, fixtures)
+        for (op, value) in fixtures {
+            #expect(ConditionEvaluator.evaluate(makeCondition(.folderPath, op, value), path: file), "folderPath \(op) should match")
+        }
+    }
+
+    @Test func documentFieldMatchesEveryDeclaredOperator() {
+        let dir = TempDir()
+        let file = dir.file("form.txt", contents: "Contract name: ACME\nPhone")
+
+        let fixtures: [Operator: String] = [
+            .isFound: DocumentFieldSpec(label: "Contract name", token: "contract").encoded(),
+            .isNotFound: DocumentFieldSpec(label: "Invoice number", token: "invoice").encoded(),
+        ]
+        assertExhaustive(.documentField, fixtures)
+        for (op, value) in fixtures {
+            #expect(ConditionEvaluator.evaluate(makeCondition(.documentField, op, value), path: file), "documentField \(op) should match")
         }
     }
 

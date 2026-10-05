@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import CryptoKit
 import Foundation
 import UniformTypeIdentifiers
 import ZIPFoundation
@@ -102,11 +103,14 @@ public struct Applied {
     /// `Undo`) but the rule engine still needs to know the copy exists, to
     /// evaluate it against the rules that follow.
     public let copiedPath: String?
+    /// Extra detail for the history entry, e.g. the verified checksum.
+    public let message: String?
 
-    public init(newPath: String, undo: Undo, copiedPath: String? = nil) {
+    public init(newPath: String, undo: Undo, copiedPath: String? = nil, message: String? = nil) {
         self.newPath = newPath
         self.undo = undo
         self.copiedPath = copiedPath
+        self.message = message
     }
 }
 
@@ -181,16 +185,27 @@ public struct ActionPlan: Equatable, Sendable {
 
 public enum ActionExecutor {
     /// Executes the action on the file at `path`, returning the new path and an
-    /// `Undo` describing how to reverse it.
-    public static func execute(_ action: Action, path: String) throws -> Applied {
+    /// `Undo` describing how to reverse it. `fields` are the document field
+    /// values the rule's conditions read, for `{token}` placeholders.
+    public static func execute(_ action: Action, path: String, fields: DocumentFieldTokens = .none) throws -> Applied {
         switch action.kind {
         case .moveToFolder:
-            let destDir = try stringParam(action, ActionParam.destination, "MoveToFolder")
+            let destDir = try destinationDir(action, fields: fields, kind: "MoveToFolder")
+            if verifiesChecksum(action) {
+                return try verifiedTransfer(path: path) {
+                    try moveIntoDir(path: path, destDir: destDir, resolution: conflictResolution(action))
+                }
+            }
             return try moveIntoDir(path: path, destDir: destDir, resolution: conflictResolution(action))
         case .copyToFolder:
-            return try copyToFolder(action, path: path)
+            if verifiesChecksum(action) {
+                return try verifiedTransfer(path: path) {
+                    try copyToFolder(action, path: path, fields: fields)
+                }
+            }
+            return try copyToFolder(action, path: path, fields: fields)
         case .rename:
-            return try renameFile(action, path: path)
+            return try renameFile(action, path: path, fields: fields)
         case .moveToTrash:
             return try moveIntoDir(path: path, destDir: try trashDir())
         case .delete:
@@ -235,8 +250,72 @@ public enum ActionExecutor {
         return Applied(newPath: dest, undo: .move(from: path, to: dest))
     }
 
-    private static func copyToFolder(_ action: Action, path: String) throws -> Applied {
-        let destDir = try stringParam(action, ActionParam.destination, "CopyToFolder")
+    /// The folder a Move/Copy writes into: `destination`, plus the optional
+    /// "Sort into subfolder" pattern with its document field tokens filled
+    /// in. Each `/`-separated part of the pattern becomes one folder level;
+    /// a token's value is always a single level (its `/` become `-`).
+    static func destinationDir(_ action: Action, fields: DocumentFieldTokens, kind: String) throws -> String {
+        let base = try stringParam(action, ActionParam.destination, kind)
+        let pattern = action.params[ActionParam.subfolder]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !pattern.isEmpty else { return base }
+        var dir = base
+        for part in pattern.split(separator: "/", omittingEmptySubsequences: true) {
+            let component = try fields.substitute(String(part)).trimmingCharacters(in: CharacterSet(charactersIn: " "))
+            if component.isEmpty || component == "." || component == ".." {
+                throw ActionError("Subfolder pattern produced an invalid folder name")
+            }
+            if let last = component.last, last == "." {
+                throw ActionError("Subfolder pattern produced a folder name ending with '.' — not supported by macOS")
+            }
+            dir = (dir as NSString).appendingPathComponent(component)
+        }
+        return dir
+    }
+
+    public static func verifiesChecksum(_ action: Action) -> Bool {
+        action.params[ActionParam.verifyChecksum]?.boolValue == true
+    }
+
+    /// Runs a move/copy, then proves the file that arrived is byte-for-byte
+    /// the one that left by comparing SHA-256 checksums. On a mismatch a
+    /// moved file is put back (a bad copy is removed) and the action fails,
+    /// so a damaged transfer — e.g. to a flaky network volume — is never
+    /// silently accepted. Folders are not hashed.
+    static func verifiedTransfer(path: String, _ transfer: () throws -> Applied) throws -> Applied {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            return try transfer()
+        }
+        let before = try sha256(path)
+        let applied = try transfer()
+        let arrived = applied.copiedPath ?? applied.newPath
+        // An unreadable result counts as a mismatch: the transfer is undone
+        // rather than reported as failed while the file has in fact moved.
+        guard let after = try? sha256(arrived), before == after else {
+            if applied.copiedPath != nil {
+                try? FileManager.default.removeItem(atPath: arrived)
+            } else if !FileManager.default.fileExists(atPath: path) {
+                try? FileManager.default.moveItem(atPath: arrived, toPath: path)
+            }
+            throw ActionError("SHA-256 verification failed for \(arrived); the transfer was undone")
+        }
+        return Applied(newPath: applied.newPath, undo: applied.undo, copiedPath: applied.copiedPath, message: "SHA-256 verified: \(after)")
+    }
+
+    /// Streams the file through SHA-256 in 1 MB chunks (constant memory).
+    static func sha256(_ path: String) throws -> String {
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func copyToFolder(_ action: Action, path: String, fields: DocumentFieldTokens = .none) throws -> Applied {
+        let destDir = try destinationDir(action, fields: fields, kind: "CopyToFolder")
         try FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
         let fileName = (path as NSString).lastPathComponent
         let naiveDest = (destDir as NSString).appendingPathComponent(fileName)
@@ -325,9 +404,9 @@ public enum ActionExecutor {
         return MoveConflictResolution(rawValue: raw) ?? defaultResolution
     }
 
-    private static func renameFile(_ action: Action, path: String) throws -> Applied {
+    private static func renameFile(_ action: Action, path: String, fields: DocumentFieldTokens = .none) throws -> Applied {
         let pattern = try stringParam(action, ActionParam.pattern, "Rename")
-        var newName = try applyRenamePattern(pattern, path: path)
+        var newName = try applyRenamePattern(pattern, path: path, fields: fields)
         if action.params[ActionParam.cleanFileName]?.boolValue == true {
             newName = cleanFileName(newName)
         }
@@ -866,12 +945,15 @@ public enum ActionExecutor {
         try plan(action, path: path).description
     }
 
-    public static func plan(_ action: Action, path: String) throws -> ActionPlan {
+    public static func plan(_ action: Action, path: String, fields: DocumentFieldTokens = .none) throws -> ActionPlan {
         let fileName = (path as NSString).lastPathComponent
+        let verifySuffix = verifiesChecksum(action) ? ", verifying SHA-256" : ""
 
         switch action.kind {
         case .moveToFolder:
-            let destDir = action.params[ActionParam.destination]?.stringValue ?? ""
+            let destDir = action.params[ActionParam.destination] == nil
+                ? ""
+                : try destinationDir(action, fields: fields, kind: "MoveToFolder")
 
             // A file already directly in its destination folder is a no-op,
             // never a rename-to-avoid-itself collision — and since nothing
@@ -913,7 +995,7 @@ public enum ActionExecutor {
             let (target, description) = conflictAwarePlan(verb: "Move", naiveTarget: naiveTarget, destDir: destDir, fileName: fileName, resolution: resolution, conflicts: conflicts)
             return ActionPlan(
                 kind: action.kind,
-                description: description,
+                description: description + verifySuffix,
                 sourcePath: path,
                 targetPath: target,
                 status: .wouldRun,
@@ -922,7 +1004,9 @@ public enum ActionExecutor {
                 isTerminal: true
             )
         case .copyToFolder:
-            let destDir = action.params[ActionParam.destination]?.stringValue ?? ""
+            let destDir = action.params[ActionParam.destination] == nil
+                ? ""
+                : try destinationDir(action, fields: fields, kind: "CopyToFolder")
             let naiveTarget = (destDir as NSString).appendingPathComponent(fileName)
             let resolution = conflictResolution(action)
             let conflicts = FileManager.default.fileExists(atPath: naiveTarget)
@@ -946,7 +1030,7 @@ public enum ActionExecutor {
             let (target, description) = conflictAwarePlan(verb: "Copy", naiveTarget: naiveTarget, destDir: destDir, fileName: fileName, resolution: resolution, conflicts: conflicts)
             return ActionPlan(
                 kind: action.kind,
-                description: description,
+                description: description + verifySuffix,
                 sourcePath: path,
                 targetPath: target,
                 status: .wouldRun,
@@ -956,7 +1040,7 @@ public enum ActionExecutor {
             )
         case .rename:
             let pattern = action.params[ActionParam.pattern]?.stringValue ?? ""
-            var newName = try applyRenamePattern(pattern, path: path)
+            var newName = try applyRenamePattern(pattern, path: path, fields: fields)
             if action.params[ActionParam.cleanFileName]?.boolValue == true {
                 newName = cleanFileName(newName)
             }
@@ -1324,8 +1408,9 @@ public enum ActionExecutor {
     }
 
     /// Substitutes tokens in rename patterns. Supported tokens: `{name}`,
-    /// `{extension}`, `{date_created}`, `{date_modified}`, `{current_date}`, `{size}`.
-    private static func applyRenamePattern(_ pattern: String, path: String) throws -> String {
+    /// `{extension}`, `{date_created}`, `{date_modified}`, `{current_date}`, `{size}`,
+    /// plus the rule's document fields (`{contract}`, `{date:yyyyMMdd}`).
+    private static func applyRenamePattern(_ pattern: String, path: String, fields: DocumentFieldTokens = .none) throws -> String {
         let url = URL(fileURLWithPath: path)
         let stem = url.deletingPathExtension().lastPathComponent
         let ext = url.pathExtension
@@ -1350,6 +1435,10 @@ public enum ActionExecutor {
                 .replacingOccurrences(of: "{date_created}", with: dayFormatter.string(from: created))
                 .replacingOccurrences(of: "{size}", with: formatFileSize(size))
         }
+
+        // Last, so a value read from a document is never itself re-scanned
+        // for built-in tokens.
+        result = try fields.substitute(result)
 
         if result.isEmpty {
             throw ActionError("rename pattern produced empty filename")

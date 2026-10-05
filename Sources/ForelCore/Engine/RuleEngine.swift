@@ -265,11 +265,22 @@ public enum RuleEngine {
                     detail: detail
                 )
             }
+            // Document fields show the value they read, or why none was.
+            if condition.kind == .documentField {
+                let result = ConditionEvaluator.evaluateDocumentField(condition, path: path, siblings: rule.conditions)
+                return ConditionPreview(
+                    kind: condition.kind,
+                    operator_: condition.operator,
+                    value: condition.value,
+                    matched: result.matched,
+                    detail: result.detail
+                )
+            }
             return ConditionPreview(
                 kind: condition.kind,
                 operator_: condition.operator,
                 value: condition.value,
-                matched: ConditionEvaluator.evaluate(condition, path: path)
+                matched: ConditionEvaluator.evaluate(condition, path: path, siblings: rule.conditions)
             )
         }
     }
@@ -297,17 +308,22 @@ public enum RuleEngine {
         let ordered = rule.conditions.sorted { evaluationCost($0.kind) < evaluationCost($1.kind) }
         switch rule.conditionMatch {
         case .all:
-            return ordered.allSatisfy { ConditionEvaluator.evaluate($0, path: path) }
+            return ordered.allSatisfy { ConditionEvaluator.evaluate($0, path: path, siblings: rule.conditions) }
         case .any:
-            return ordered.contains { ConditionEvaluator.evaluate($0, path: path) }
+            return ordered.contains { ConditionEvaluator.evaluate($0, path: path, siblings: rule.conditions) }
         }
     }
 
     /// Relative cost of evaluating a condition, used only to order evaluation so
     /// the cheap checks can short-circuit before the expensive ones. `contents`
-    /// can read/parse the whole file (and run OCR), so it is always evaluated last.
+    /// can read/parse the whole file (and run OCR); document fields always OCR
+    /// PDFs and images, so they come last.
     private static func evaluationCost(_ kind: ConditionKind) -> Int {
-        kind == .contents ? 1 : 0
+        switch kind {
+        case .contents: return 1
+        case .documentField: return 2
+        default: return 0
+        }
     }
 
     private static func ruleInScope(_ rule: Rule, depth: Int) -> Bool {
@@ -382,11 +398,14 @@ public enum RuleEngine {
         var copiedPaths: [String] = []
         var current = path
         var stoppedOnTerminal = false
+        // Read once from the file as it matched; a later rename or move in
+        // this chain doesn't change its contents.
+        let fields = DocumentFieldExtractor.tokens(for: rule.conditions, path: path)
 
         for action in sorted {
             let original = current
             do {
-                let actionPlan = try ActionExecutor.plan(action, path: current)
+                let actionPlan = try ActionExecutor.plan(action, path: current, fields: fields)
 
                 switch actionPlan.status {
                 case .wouldSkip:
@@ -439,7 +458,7 @@ public enum RuleEngine {
                         )
                     )
                 case .wouldRun:
-                    let applied = try ActionExecutor.execute(action, path: current)
+                    let applied = try ActionExecutor.execute(action, path: current, fields: fields)
                     let resultPath: String
                     if let copiedPath = applied.copiedPath {
                         resultPath = copiedPath
@@ -458,6 +477,7 @@ public enum RuleEngine {
                             resultPath: resultPath,
                             undo: applied.undo.toJSON(),
                             reversible: applied.undo.isReversible,
+                            message: applied.message,
                             resultVolumeId: resultIdentity?.volumeId,
                             resultFileId: resultIdentity?.fileId
                         )
@@ -496,10 +516,11 @@ public enum RuleEngine {
         var copiedPaths: [String] = []
         var current = path
         var stoppedOnTerminal = false
+        let fields = DocumentFieldExtractor.tokens(for: rule.conditions, path: path)
 
         for action in sorted {
             do {
-                let plan = try ActionExecutor.plan(action, path: current)
+                let plan = try ActionExecutor.plan(action, path: current, fields: fields)
                 actions.append(
                     ActionPreview(
                         kind: plan.kind,

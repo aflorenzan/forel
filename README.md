@@ -74,6 +74,7 @@ File matching and processing happen **locally on your Mac**. Forel does not uplo
 
 - **Rule-based automation** — Create flexible rules combining filename patterns, file types, sizes, dates, tags, and Finder color labels.
 - **Content matching & OCR** — Match text inside documents, images, and scanned PDFs using local extraction and on-device OCR. See [Content matching](#content-matching) for supported formats and limits.
+- **Document fields** — Read labeled values out of forms (e.g. *Contract name*, *Request date*), including filled and scanned PDFs, and use them to rename files and sort them into subfolders. See [Document fields](#document-fields).
 - **Folder watching** — Monitor any number of folders in real time with native macOS FSEvents.
 - **Dry Run & Run Now** — Preview matching files and planned actions without changing files, then run rules manually on existing files when ready.
 - **History & Undo** — Review action results and undo supported actions when it is safe to do so.
@@ -259,6 +260,59 @@ File path
 > relies on macOS having already indexed the file and can only answer the
 > `contains` operator (not `is`, `starts with`, regex, …). When a file isn't
 > indexed, it simply doesn't match.
+
+## Document fields
+
+The **Document field** condition reads the value printed next to — or under — a
+label on a form, and makes it available to the rule's actions as a `{token}`.
+It's meant for paperwork that always has the same shape: request forms,
+invoices, contracts.
+
+| Setting | Meaning |
+|---------|---------|
+| Label | The label printed on the form, e.g. `Contract name`. Matched ignoring case and accents, and tolerant of small OCR mistakes. |
+| Type | **Text** (needs at least one letter), **Person name** (at least two words, no e-mail), or **Date** (`dd/mm/yyyy`, or `mm/dd/yyyy` when the day can't be a month; `/`, `-` or `.` separators). |
+| Token | The name actions use, e.g. `contract` → `{contract}`. |
+| Other labels on this form *(options)* | Labels that are never taken as this field's value — so an empty field followed by the next label isn't misread. The labels of the rule's other document fields are included automatically. |
+| Minimum OCR confidence *(options)* | Default 80%. A value read with less confidence doesn't count, unless the PDF's text layer contains it too. |
+
+The value is the rest of the label's line (after an optional `:`), or the first
+of the next three lines that isn't empty or another label. PDFs (first two
+pages) and images are read with on-device OCR, line by line, so values typed
+into form fields and scans both work; other formats use the
+[Content matching](#content-matching) pipeline. The Dry Run shows each value it
+read, or why it found none.
+
+**Using the values**
+
+- **Rename**: `{date:yyyyMMdd} - {contract} - {user}`. Date tokens default to
+  `yyyy-MM-dd` and accept any date format after a colon.
+- **Move / Copy → Options → Sort into subfolder**: `{contract}` or
+  `Contracts/{contract}`; folders are created as needed.
+- Values are made safe for file names (`/` and `:` become `-`). If a token's
+  field wasn't found, the action fails instead of writing `{token}` into a name.
+
+Operators: **is found** / **is not found**. *Is not found* also matches files
+with no readable text.
+
+**Example: filing VPN access request forms from Downloads**
+
+1. Rule *File VPN form* (all subfolders):
+   - Folder path · does not contain · `VPN Access Forms` — skip already-filed forms
+   - Document field · is found · “Request date” as Date → `{date}`
+   - Document field · is found · “User name” as Person name → `{user}`
+   - Document field · is found · “Contract name” as Text → `{contract}`
+   - Move to folder `~/Downloads/VPN Access Forms`, sort into subfolder `{contract}`, **Verify with SHA-256**
+   - Rename to `{date:yyyyMMdd} - {contract} - {user}`
+2. Rule *Review VPN form* (below it):
+   - Folder path · does not contain · `VPN Access Forms`
+   - Contents · matches regex · `(?i)vpn access request`
+   - Add tag `Review` — forms the first rule couldn't read completely
+
+**Verify with SHA-256** (Move/Copy options) hashes the file before and after
+the transfer. On a mismatch a moved file is put back (a bad copy is removed)
+and the action fails; on success the checksum is recorded in the action's
+history entry.
 
 ## Contributing
 

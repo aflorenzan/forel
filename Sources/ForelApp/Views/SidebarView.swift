@@ -183,6 +183,10 @@ struct SidebarView: View {
             model.reloadRules()
         }
         .contextMenu {
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder.path)])
+            }
+            Divider()
             Button("Change path of folder…") { changeFolder(folder) }
             Button("Remove", role: .destructive) { model.removeFolder(folder) }
         }

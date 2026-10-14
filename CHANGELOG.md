@@ -7,6 +7,8 @@ All notable changes to Forel are documented here. Format loosely follows
 
 ### Added
 - Right-clicking a watched folder in the sidebar now offers Show in Finder.
+- Activity can now be opened from the bottom of the sidebar, next to Settings.
+- When Run Now has failed actions, its result now stays on screen with a Show in Activity link to see what went wrong.
 - Added a getting-started example for lowercasing filenames and replacing spaces with underscores, with guidance on how scripts receive files.
 - The menu bar quick panel now shows recent activity across all folders, showing the 10 latest actions first and loading more as you scroll.
 

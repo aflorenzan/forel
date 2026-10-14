@@ -101,6 +101,10 @@ struct SidebarView: View {
                     .help("Settings")
                 }
                 Spacer()
+                FooterLink(title: "Activity", systemImage: "clock.arrow.circlepath") {
+                    model.showActivity()
+                }
+                .help("Activity history")
             }
         }
         .padding(16)

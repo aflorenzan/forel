@@ -33,6 +33,11 @@ final class AppModel: ObservableObject {
     /// `Settings` scene), matching standard macOS app structure.
     enum DetailRoute { case rules, history }
 
+    struct RunNowMessage: Equatable {
+        let text: String
+        let hasFailures: Bool
+    }
+
     @Published var folders: [WatchedFolder] = []
     @Published var selectedFolderId: String?
     @Published var rules: [Rule] = []
@@ -55,7 +60,7 @@ final class AppModel: ObservableObject {
     /// plain static var, not itself observable.
     @Published var accentVersion: Int = 0
     @Published private(set) var isRunningNow = false
-    @Published private(set) var runNowMessage: String?
+    @Published private(set) var runNowMessage: RunNowMessage?
     private var runNowMessageId: UUID?
     @Published private(set) var isPreviewing = false
     @Published var previewResult: PreviewResult?
@@ -483,7 +488,7 @@ final class AppModel: ObservableObject {
         guard let folder = folders.first(where: { $0.id == selectedFolderId }) else { return }
         let folderRules = rules.filter(\.enabled)
         guard !folderRules.isEmpty else {
-            showRunNowMessage("Run complete — no enabled rules")
+            showRunNowMessage(RunNowMessage(text: "Run complete — no enabled rules", hasFailures: false))
             return
         }
         isRunningNow = true
@@ -504,20 +509,39 @@ final class AppModel: ObservableObject {
                 db.withLock { db in try? db.insertHistoryEntries(allHistory) }
             }
             reloadHistory()
-            showRunNowMessage(RunSummary.message(for: allHistory))
+            showRunNowMessage(RunNowMessage(
+                text: RunSummary.message(for: allHistory),
+                hasFailures: allHistory.contains { $0.status == .failed }
+            ))
         }
     }
 
-    /// Shows a transient confirmation after a manual run, auto-dismissed a
-    /// few seconds later — unless a newer run has already replaced it.
-    private func showRunNowMessage(_ message: String) {
+    /// Shows the result of a manual run. A clean run is auto-dismissed a few
+    /// seconds later — unless a newer run has already replaced it. A run with
+    /// failures stays until dismissed, so there is time to open Activity.
+    private func showRunNowMessage(_ message: RunNowMessage) {
         let id = UUID()
         runNowMessageId = id
         runNowMessage = message
+        guard !message.hasFailures else { return }
         Task {
             try? await Task.sleep(for: .seconds(3))
             if runNowMessageId == id { runNowMessage = nil }
         }
+    }
+
+    func dismissRunNowMessage() {
+        runNowMessage = nil
+    }
+
+    /// Opens Activity. When coming from a folder's run result, a filter set
+    /// to another folder would hide that run, so it is cleared.
+    func showActivity(forFolder folderId: String? = nil) {
+        if let folderId, let historyFolderFilterId, historyFolderFilterId != folderId {
+            self.historyFolderFilterId = nil
+        }
+        reloadHistory()
+        detailRoute = .history
     }
 
     /// Runs Dry Run off the main thread — scanning every file in a large

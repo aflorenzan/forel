@@ -157,6 +157,11 @@ public struct ActionPlan: Equatable, Sendable {
     public let finalPath: String
     public let copiedPath: String?
     public let isTerminal: Bool
+    /// Why the action is expected to fail when it runs, if a problem is
+    /// already visible while planning (e.g. an unreachable destination).
+    /// Only informs the preview: execution still attempts the action, so a
+    /// wrong guess here can never block a run that would have worked.
+    public let warning: String?
 
     public init(
         kind: ActionKind,
@@ -166,7 +171,8 @@ public struct ActionPlan: Equatable, Sendable {
         status: DryRunStatus,
         finalPath: String,
         copiedPath: String?,
-        isTerminal: Bool
+        isTerminal: Bool,
+        warning: String? = nil
     ) {
         self.kind = kind
         self.description = description
@@ -176,6 +182,7 @@ public struct ActionPlan: Equatable, Sendable {
         self.finalPath = finalPath
         self.copiedPath = copiedPath
         self.isTerminal = isTerminal
+        self.warning = warning
     }
 }
 
@@ -919,7 +926,8 @@ public enum ActionExecutor {
                 status: .wouldRun,
                 finalPath: target,
                 copiedPath: nil,
-                isTerminal: true
+                isTerminal: true,
+                warning: destinationWarning(destDir)
             )
         case .copyToFolder:
             let destDir = action.params[ActionParam.destination]?.stringValue ?? ""
@@ -952,7 +960,8 @@ public enum ActionExecutor {
                 status: .wouldRun,
                 finalPath: path,
                 copiedPath: target,
-                isTerminal: false
+                isTerminal: false,
+                warning: destinationWarning(destDir)
             )
         case .rename:
             let pattern = action.params[ActionParam.pattern]?.stringValue ?? ""
@@ -1306,6 +1315,23 @@ public enum ActionExecutor {
             // separately by the caller), so this behaves like a plain move/copy.
             return (naiveTarget, "\(verb) to \(naiveTarget)")
         }
+    }
+
+    /// A move/copy creates its destination folder on demand, so what has to
+    /// be writable is that folder or, when it doesn't exist yet, its nearest
+    /// existing ancestor. A network share that isn't mounted or that Forel
+    /// isn't allowed to access shows up here as a missing folder under a
+    /// location that can't be written to.
+    private static func destinationWarning(_ destDir: String) -> String? {
+        guard !destDir.isEmpty else { return nil }
+        var candidate = normalizedPath(destDir)
+        while !FileManager.default.fileExists(atPath: candidate) {
+            let parent = (candidate as NSString).deletingLastPathComponent
+            guard parent != candidate, !parent.isEmpty else { break }
+            candidate = parent
+        }
+        guard !FileManager.default.isWritableFile(atPath: candidate) else { return nil }
+        return "The destination folder can't be reached or written to right now. Check that the disk or network share is connected and that Forel is allowed to access it."
     }
 
     private static func normalizedPath(_ path: String) -> String {

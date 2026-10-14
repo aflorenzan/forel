@@ -504,11 +504,7 @@ final class AppModel: ObservableObject {
                 db.withLock { db in try? db.insertHistoryEntries(allHistory) }
             }
             reloadHistory()
-            showRunNowMessage(
-                allHistory.isEmpty
-                    ? "Run complete — no matching files"
-                    : "Run complete — \(allHistory.count) action\(allHistory.count == 1 ? "" : "s") applied"
-            )
+            showRunNowMessage(RunSummary.message(for: allHistory))
         }
     }
 

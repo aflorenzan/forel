@@ -644,6 +644,13 @@ private struct PreviewSheet: View {
                                                     .font(.system(size: 10))
                                                     .foregroundStyle(ForelTheme.secondaryText)
                                             }
+                                            if let warning = action.warning {
+                                                Text(warning)
+                                                    .font(.system(size: 10))
+                                                    .foregroundStyle(.orange)
+                                                    .fixedSize(horizontal: false, vertical: true)
+                                                    .textSelection(.enabled)
+                                            }
                                         }
                                         .padding(.leading, 6)
                                     }
@@ -687,6 +694,7 @@ private extension ConditionPreview {
 
 private extension ActionPreview {
     var statusLabel: String {
+        if warning != nil { return "Likely to fail" }
         switch status {
         case .wouldRun: return "Would run"
         case .wouldSkip: return "Would skip"
@@ -696,6 +704,7 @@ private extension ActionPreview {
     }
 
     var statusIcon: String {
+        if warning != nil { return "exclamationmark.triangle.fill" }
         switch status {
         case .wouldRun: return "arrow.turn.down.right"
         case .wouldSkip: return "minus.circle"
@@ -705,6 +714,7 @@ private extension ActionPreview {
     }
 
     @MainActor var statusColor: Color {
+        if warning != nil { return .orange }
         switch status {
         case .wouldRun: return ForelTheme.accent
         case .wouldSkip: return ForelTheme.secondaryText

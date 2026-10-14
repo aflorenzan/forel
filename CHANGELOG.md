@@ -17,6 +17,8 @@ All notable changes to Forel are documented here. Format loosely follows
 
 ### Fixed
 - The menu bar icon now appears when Forel starts at login, without having to reopen the app.
+- Run Now no longer reports failed actions as applied: its result now counts applied, failed, skipped, and pending actions separately.
+- Dry Run now warns when a Move or Copy destination can't be reached or written to, such as a disconnected disk or network share.
 - Rules with a Size condition no longer crash when the entered size is an extremely large number.
 - Rules no longer move or change macOS system files such as a folder's custom icon file, so folders keep their custom icons. iCloud placeholders, volume system folders, and Windows `Thumbs.db` / `desktop.ini` files are ignored too.
 - Automatic rules now wait until an arriving file or folder has finished being written before acting on it, so AirDrop transfers, Finder copies, and other in-progress files are no longer moved while incomplete or left behind as empty duplicates. Pausing automatic watching during a transfer also keeps rules from running when it completes. Files still being copied by Finder are also skipped by Dry Run and Run Now.

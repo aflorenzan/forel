@@ -22,6 +22,17 @@ public struct WatcherActivitySummary: Equatable, Sendable {
     public let ruleNames: [String]
 }
 
+/// A file whose rules couldn't move or copy it because a destination disk or
+/// network share wasn't connected.
+public struct VolumeUnavailableEvent: Equatable, Sendable {
+    /// Names of the disks or shares, as under /Volumes.
+    public let volumes: [String]
+    public let ruleNames: [String]
+    /// Whether the rules run again on the file once its disk or share is
+    /// connected. Not when another action already changed it this time.
+    public let willRetry: Bool
+}
+
 /// Wires `FileWatcher` events to the database and rule engine: for every
 /// created/renamed path, finds the owning watched folder, loads its rules,
 /// evaluates them, and persists any resulting action history. Mirrors
@@ -51,6 +62,11 @@ public final class WatcherCoordinator: @unchecked Sendable {
     private let maxStalledInterval: TimeInterval = 60
     public var onRuleMatched: (@Sendable (String, String) -> Void)?
     public var onActivity: (@Sendable (WatcherActivitySummary) -> Void)?
+    public var onVolumeUnavailable: (@Sendable (VolumeUnavailableEvent) -> Void)?
+    /// Files to run the rules on again once a disk or share is connected, by
+    /// its name under /Volumes. Only touched on `processingQueue`, and not
+    /// kept across launches.
+    private var waitingForVolume: [String: Set<String>] = [:]
 
     private struct SettlingState {
         var fingerprint: String?
@@ -95,8 +111,36 @@ public final class WatcherCoordinator: @unchecked Sendable {
     /// Files that a still-watched nested folder covers keep waiting.
     private func stopSettling(under root: String) {
         watchedRoots.remove(root)
-        settling = settling.filter { path, _ in
+        let isStillWatched: (String) -> Bool = { [watchedRoots] path in
             !Self.isPath(path, under: root) || watchedRoots.contains { Self.isPath(path, under: $0) }
+        }
+        settling = settling.filter { path, _ in isStillWatched(path) }
+        // Nor may they run once their disk or share comes back.
+        waitingForVolume = waitingForVolume.compactMapValues { paths in
+            let kept = paths.filter(isStillWatched)
+            return kept.isEmpty ? nil : kept
+        }
+    }
+
+    /// Runs the rules again on the files that couldn't be moved or copied
+    /// because the disk or share mounted at `mountPoint` wasn't connected.
+    public func volumeDidMount(atPath mountPoint: String) {
+        let volume = (mountPoint as NSString).lastPathComponent
+        processingQueue.async { [weak self] in
+            self?.retryWaiting(forVolume: volume)
+        }
+    }
+
+    private func retryWaiting(forVolume volume: String) {
+        guard let paths = waitingForVolume.removeValue(forKey: volume) else { return }
+        for path in paths.sorted() {
+            // A file waiting on several volumes is retried once; it waits
+            // again for whichever is still missing.
+            waitingForVolume = waitingForVolume.compactMapValues { waiting in
+                let kept = waiting.subtracting([path])
+                return kept.isEmpty ? nil : kept
+            }
+            handle(path: path, retrying: true)
         }
     }
 
@@ -211,14 +255,16 @@ public final class WatcherCoordinator: @unchecked Sendable {
         return activeProcessingRoots[root, default: 0] > 0
     }
 
-    func handle(path: String) {
+    /// `retrying` runs the rules on a file that was already evaluated, once
+    /// the disk or share they failed on is connected.
+    func handle(path: String, retrying: Bool = false) {
         // A duplicate/coalesced FSEvent for a path a prior call already
         // moved away — common with FSEvents — would otherwise be replanned
         // (name/extension conditions don't require the file to exist) and
         // then fail at execution with a noisy "doesn't exist" entry.
         // Nothing meaningful can be evaluated against a path that's gone.
         guard FileManager.default.fileExists(atPath: path) else { return }
-        guard hasPathChangedSinceLastEvaluation(path) else { return }
+        guard retrying || hasPathChangedSinceLastEvaluation(path) else { return }
 
         guard let (folder, rules) = db.withLock({ db -> (WatchedFolder, [Rule])? in
             guard let folder = try? db.folderForPath(path) else { return nil }
@@ -241,6 +287,7 @@ public final class WatcherCoordinator: @unchecked Sendable {
             }
             recordEvaluatedResultStates(history)
             notifyActivity(from: history)
+            waitForDisconnectedVolumes(history, path: path, rules: rules)
         }
         recordEvaluatedState(path)
     }
@@ -372,8 +419,47 @@ public final class WatcherCoordinator: @unchecked Sendable {
             }
             recordEvaluatedResultStates(history)
             notifyActivity(from: history)
+            waitForDisconnectedVolumes(history, path: path, rules: rules)
         }
         recordEvaluatedState(path)
+    }
+
+    /// Reports a failed move or copy whose destination disk or share isn't
+    /// connected, and keeps the file to run its rules again when it is.
+    private func waitForDisconnectedVolumes(_ history: [HistoryEntry], path: String, rules: [Rule]) {
+        let volumes = Self.disconnectedVolumes(in: history, rules: rules)
+        guard !volumes.isEmpty else { return }
+        // Running the rules again redoes every action on the file: only safe
+        // when none was applied this time (a copy made before the failed move
+        // would be made twice).
+        let willRetry = !history.contains { $0.status == .applied }
+        if willRetry {
+            for volume in volumes {
+                waitingForVolume[volume, default: []].insert(path)
+            }
+        }
+        let failed = history.filter { $0.status == .failed }
+        onVolumeUnavailable?(VolumeUnavailableEvent(
+            volumes: volumes,
+            ruleNames: Array(Set(failed.map(\.ruleName))).sorted(),
+            willRetry: willRetry
+        ))
+    }
+
+    /// The disks or shares, by name, that the failed moves and copies in
+    /// `history` were headed to and that aren't connected.
+    static func disconnectedVolumes(in history: [HistoryEntry], rules: [Rule]) -> [String] {
+        var volumes = Set<String>()
+        for entry in history where entry.status == .failed && [.moveToFolder, .copyToFolder].contains(entry.actionKind) {
+            guard let rule = rules.first(where: { $0.id == entry.ruleId }) else { continue }
+            for action in rule.actions where action.kind == entry.actionKind {
+                guard let destination = action.params[ActionParam.destination]?.stringValue,
+                      let volume = VolumePaths.unmountedVolume(of: destination)
+                else { continue }
+                volumes.insert(volume)
+            }
+        }
+        return volumes.sorted()
     }
 
     private func notifyActivity(from history: [HistoryEntry]) {

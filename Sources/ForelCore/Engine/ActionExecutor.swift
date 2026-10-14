@@ -234,22 +234,44 @@ public enum ActionExecutor {
     /// `resolveDestination`). Trash/delete have no user-facing conflict
     /// choice and always use the `.rename` default.
     private static func moveIntoDir(path: String, destDir: String, resolution: MoveConflictResolution = .rename) throws -> Applied {
-        try FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
-        let fileName = (path as NSString).lastPathComponent
-        let naiveDest = (destDir as NSString).appendingPathComponent(fileName)
-        let dest = try resolveDestination(naiveDest: naiveDest, dir: destDir, fileName: fileName, resolution: resolution)
-        try FileManager.default.moveItem(atPath: path, toPath: dest)
-        return Applied(newPath: dest, undo: .move(from: path, to: dest))
+        try explainingDisconnectedVolume(destDir) {
+            try FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
+            let fileName = (path as NSString).lastPathComponent
+            let naiveDest = (destDir as NSString).appendingPathComponent(fileName)
+            let dest = try resolveDestination(naiveDest: naiveDest, dir: destDir, fileName: fileName, resolution: resolution)
+            try FileManager.default.moveItem(atPath: path, toPath: dest)
+            return Applied(newPath: dest, undo: .move(from: path, to: dest))
+        }
+    }
+
+    /// Runs `body` as is. Only when it fails and the destination is on a disk
+    /// or share that isn't mounted, the error says so by name instead of the
+    /// file system's message, which can blame the startup disk.
+    private static func explainingDisconnectedVolume<T>(_ destDir: String, _ body: () throws -> T) throws -> T {
+        do {
+            return try body()
+        } catch {
+            if let volume = VolumePaths.unmountedVolume(of: destDir) {
+                throw ActionError(volumeNotConnectedMessage(volume))
+            }
+            throw error
+        }
+    }
+
+    private static func volumeNotConnectedMessage(_ volume: String) -> String {
+        "“\(volume)” isn't connected. Connect the disk or network share, or choose the destination folder again."
     }
 
     private static func copyToFolder(_ action: Action, path: String) throws -> Applied {
         let destDir = try stringParam(action, ActionParam.destination, "CopyToFolder")
-        try FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
-        let fileName = (path as NSString).lastPathComponent
-        let naiveDest = (destDir as NSString).appendingPathComponent(fileName)
-        let dest = try resolveDestination(naiveDest: naiveDest, dir: destDir, fileName: fileName, resolution: conflictResolution(action))
-        try FileManager.default.copyItem(atPath: path, toPath: dest)
-        return Applied(newPath: path, undo: .none, copiedPath: dest)
+        return try explainingDisconnectedVolume(destDir) {
+            try FileManager.default.createDirectory(atPath: destDir, withIntermediateDirectories: true)
+            let fileName = (path as NSString).lastPathComponent
+            let naiveDest = (destDir as NSString).appendingPathComponent(fileName)
+            let dest = try resolveDestination(naiveDest: naiveDest, dir: destDir, fileName: fileName, resolution: conflictResolution(action))
+            try FileManager.default.copyItem(atPath: path, toPath: dest)
+            return Applied(newPath: path, undo: .none, copiedPath: dest)
+        }
     }
 
     private struct ZipExtractionPlan {
@@ -1331,6 +1353,9 @@ public enum ActionExecutor {
             candidate = parent
         }
         guard !FileManager.default.isWritableFile(atPath: candidate) else { return nil }
+        if let volume = VolumePaths.unmountedVolume(of: destDir) {
+            return volumeNotConnectedMessage(volume)
+        }
         return "The destination folder can't be reached or written to right now. Check that the disk or network share is connected and that Forel is allowed to access it."
     }
 

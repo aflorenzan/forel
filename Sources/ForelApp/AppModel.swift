@@ -74,6 +74,9 @@ final class AppModel: ObservableObject {
     private var historyCleanupTimer: AnyCancellable?
     private var pendingWatcherNotification = PendingWatcherNotification()
     private var watcherNotificationTask: Task<Void, Never>?
+    private var volumeNotifier = VolumeUnavailableNotifier()
+    private var volumeNotificationTask: Task<Void, Never>?
+    private var volumeMountObserver: NSObjectProtocol?
 
     init() throws {
         let appSupportRoot = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -88,6 +91,11 @@ final class AppModel: ObservableObject {
         self.coordinator.onActivity = { [weak self] summary in
             Task { @MainActor in
                 self?.queueWatcherNotification(summary)
+            }
+        }
+        self.coordinator.onVolumeUnavailable = { [weak self] event in
+            Task { @MainActor in
+                self?.queueVolumeNotification(event)
             }
         }
         // Default to paused (watching off) on a fresh install — a brand-new
@@ -117,6 +125,27 @@ final class AppModel: ObservableObject {
         reloadFolders()
         startWatchingEnabledFolders()
         startHistoryCleanupTimer()
+        observeVolumeMounts()
+    }
+
+    /// A disk or share coming back runs the rules again on the files that
+    /// couldn't be moved or copied to it while it was missing.
+    private func observeVolumeMounts() {
+        volumeMountObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didMountNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let url = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL else { return }
+            MainActor.assumeIsolated {
+                self?.volumeDidMount(atPath: url.path)
+            }
+        }
+    }
+
+    private func volumeDidMount(atPath mountPoint: String) {
+        volumeNotifier.volumeConnected((mountPoint as NSString).lastPathComponent)
+        coordinator.volumeDidMount(atPath: mountPoint)
     }
 
     /// Forel's bundle identifier moved from `com.forel.app` (`.app` isn't a
@@ -179,6 +208,9 @@ final class AppModel: ObservableObject {
         watcherNotificationTask?.cancel()
         watcherNotificationTask = nil
         pendingWatcherNotification = PendingWatcherNotification()
+        volumeNotificationTask?.cancel()
+        volumeNotificationTask = nil
+        volumeNotifier.discardPending()
     }
 
     func setAccentPreset(_ preset: AccentPreset) {
@@ -230,7 +262,25 @@ final class AppModel: ObservableObject {
         }
         guard let notification = pendingWatcherNotification.makeNotification() else { return }
         pendingWatcherNotification = PendingWatcherNotification()
+        await postNotification(title: notification.title, body: notification.body)
+    }
 
+    private func queueVolumeNotification(_ event: VolumeUnavailableEvent) {
+        guard watcherNotificationsEnabled, volumeNotifier.add(event) else { return }
+        guard volumeNotificationTask == nil else { return }
+        volumeNotificationTask = Task { [weak self] in
+            try? await Task.sleep(for: watcherNotificationDelay)
+            await self?.flushVolumeNotification()
+        }
+    }
+
+    private func flushVolumeNotification() async {
+        volumeNotificationTask = nil
+        guard watcherNotificationsEnabled, let notification = volumeNotifier.makeNotification() else { return }
+        await postNotification(title: notification.title, body: notification.body)
+    }
+
+    private func postNotification(title: String, body: String) async {
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
         if settings.authorizationStatus == .notDetermined {
@@ -239,8 +289,8 @@ final class AppModel: ObservableObject {
         guard (await center.notificationSettings()).authorizationStatus == .authorized else { return }
 
         let content = UNMutableNotificationContent()
-        content.title = notification.title
-        content.body = notification.body
+        content.title = title
+        content.body = body
         content.sound = .default
 
         let request = UNNotificationRequest(

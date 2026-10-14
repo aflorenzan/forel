@@ -36,6 +36,9 @@ final class AppModel: ObservableObject {
     struct RunNowMessage: Equatable {
         let text: String
         let hasFailures: Bool
+        /// The folder that was run: the result belongs to it, not to
+        /// whichever folder is selected later.
+        let folderId: String
     }
 
     @Published var folders: [WatchedFolder] = []
@@ -77,6 +80,10 @@ final class AppModel: ObservableObject {
     private var volumeNotifier = VolumeUnavailableNotifier()
     private var volumeNotificationTask: Task<Void, Never>?
     private var volumeMountObserver: NSObjectProtocol?
+    /// Bumped when automatic runs record history, for views showing recent
+    /// activity. A burst of files makes one bump, not one per file.
+    @Published private(set) var watcherHistoryRevision = 0
+    private var watcherHistoryRevisionTask: Task<Void, Never>?
 
     init() throws {
         let appSupportRoot = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -96,6 +103,11 @@ final class AppModel: ObservableObject {
         self.coordinator.onVolumeUnavailable = { [weak self] event in
             Task { @MainActor in
                 self?.queueVolumeNotification(event)
+            }
+        }
+        self.coordinator.onHistoryRecorded = { [weak self] in
+            Task { @MainActor in
+                self?.bumpWatcherHistoryRevision()
             }
         }
         // Default to paused (watching off) on a fresh install — a brand-new
@@ -140,6 +152,15 @@ final class AppModel: ObservableObject {
             MainActor.assumeIsolated {
                 self?.volumeDidMount(atPath: url.path)
             }
+        }
+    }
+
+    private func bumpWatcherHistoryRevision() {
+        guard watcherHistoryRevisionTask == nil else { return }
+        watcherHistoryRevisionTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            self?.watcherHistoryRevisionTask = nil
+            self?.watcherHistoryRevision += 1
         }
     }
 
@@ -538,7 +559,7 @@ final class AppModel: ObservableObject {
         guard let folder = folders.first(where: { $0.id == selectedFolderId }) else { return }
         let folderRules = rules.filter(\.enabled)
         guard !folderRules.isEmpty else {
-            showRunNowMessage(RunNowMessage(text: "Run complete — no enabled rules", hasFailures: false))
+            showRunNowMessage(RunNowMessage(text: "Run complete — no enabled rules", hasFailures: false, folderId: folder.id))
             return
         }
         isRunningNow = true
@@ -561,7 +582,8 @@ final class AppModel: ObservableObject {
             reloadHistory()
             showRunNowMessage(RunNowMessage(
                 text: RunSummary.message(for: allHistory),
-                hasFailures: allHistory.contains { $0.status == .failed }
+                hasFailures: allHistory.contains { $0.status == .failed },
+                folderId: folder.id
             ))
         }
     }
@@ -582,6 +604,14 @@ final class AppModel: ObservableObject {
 
     func dismissRunNowMessage() {
         runNowMessage = nil
+    }
+
+    /// The last Run Now result, shown only with the folder it was run on. A
+    /// result with failures stays until dismissed, so it is back when that
+    /// folder is selected again.
+    var runNowMessageForSelectedFolder: RunNowMessage? {
+        guard let runNowMessage, runNowMessage.folderId == selectedFolderId else { return nil }
+        return runNowMessage
     }
 
     /// Opens Activity. When coming from a folder's run result, a filter set

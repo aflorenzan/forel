@@ -33,7 +33,7 @@ import Foundation
         let made = notifier.makeNotification()
         let notification = try #require(made)
         #expect(notification.title == "“SG_Shared” isn't connected")
-        #expect(notification.body == "2 files couldn't be moved or copied. Rules: to nas. Forel will try again when it's connected.")
+        #expect(notification.body == "2 files couldn't be moved or copied. Rules: to nas. Forel will try again when it's connected, if watching is still on.")
         let again = notifier.makeNotification()
         #expect(again == nil)
     }

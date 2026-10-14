@@ -197,9 +197,11 @@ public enum VolumePaths {
         return normalized(lhs) == normalized(rhs)
     }
 
+    /// A NUL-terminated `statfs` name. One that isn't valid UTF-8 comes back
+    /// empty, which matches no path.
     private static func cString<T>(_ field: inout T) -> String {
         withUnsafeBytes(of: &field) { bytes in
-            String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+            String(bytes: bytes.prefix { $0 != 0 }, encoding: .utf8) ?? ""
         }
     }
 }

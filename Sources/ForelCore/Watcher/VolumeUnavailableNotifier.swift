@@ -74,7 +74,7 @@ public struct VolumeUnavailableNotifier: Sendable {
         let rulesText = visibleRules.joined(separator: ", ")
             + (remainingRuleCount > 0 ? " and \(remainingRuleCount) more" : "")
         let next = pendingAllRetry
-            ? "Forel will try again when \(one ? "it's" : "they're") connected."
+            ? "Forel will try again when \(one ? "it's" : "they're") connected, if watching is still on."
             : "Connect \(one ? "it" : "them"), then use Run Now."
         let body = "\(pendingFileCount) \(fileLabel) couldn't be moved or copied. Rules: \(rulesText). \(next)"
 

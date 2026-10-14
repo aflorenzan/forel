@@ -22,17 +22,6 @@ public struct WatcherActivitySummary: Equatable, Sendable {
     public let ruleNames: [String]
 }
 
-/// A file whose rules couldn't move or copy it because a destination disk or
-/// network share wasn't connected.
-public struct VolumeUnavailableEvent: Equatable, Sendable {
-    /// Names of the disks or shares, as under /Volumes.
-    public let volumes: [String]
-    public let ruleNames: [String]
-    /// Whether the rules run again on the file once its disk or share is
-    /// connected. Not when another action already changed it this time.
-    public let willRetry: Bool
-}
-
 /// Wires `FileWatcher` events to the database and rule engine: for every
 /// created/renamed path, finds the owning watched folder, loads its rules,
 /// evaluates them, and persists any resulting action history. Mirrors
@@ -44,7 +33,7 @@ public final class WatcherCoordinator: @unchecked Sendable {
     /// arbitrary amount of time, especially when moving across volumes or to
     /// a network share, so process their immutable event snapshots here
     /// instead of blocking the native stream's delivery queue.
-    private let processingQueue = DispatchQueue(label: "app.forel.watcher-processing")
+    let processingQueue = DispatchQueue(label: "app.forel.watcher-processing")
     private let activeProcessingLock = NSLock()
     private var activeProcessingRoots: [String: Int] = [:]
     /// How long a newly arrived file's size and modification time must stay
@@ -63,10 +52,11 @@ public final class WatcherCoordinator: @unchecked Sendable {
     public var onRuleMatched: (@Sendable (String, String) -> Void)?
     public var onActivity: (@Sendable (WatcherActivitySummary) -> Void)?
     public var onVolumeUnavailable: (@Sendable (VolumeUnavailableEvent) -> Void)?
-    /// Files to run the rules on again once a disk or share is connected, by
-    /// its name under /Volumes. Only touched on `processingQueue`, and not
-    /// kept across launches.
-    private var waitingForVolume: [String: Set<String>] = [:]
+    /// Called whenever an automatic run records history, failures included.
+    public var onHistoryRecorded: (@Sendable () -> Void)?
+    /// Files to run the rules on again, by the /Volumes name of the disk or
+    /// share they wait for. Only touched on `processingQueue`; not persisted.
+    var waitingForVolume: [String: Set<String>] = [:]
 
     private struct SettlingState {
         var fingerprint: String?
@@ -116,32 +106,7 @@ public final class WatcherCoordinator: @unchecked Sendable {
         }
         settling = settling.filter { path, _ in isStillWatched(path) }
         // Nor may they run once their disk or share comes back.
-        waitingForVolume = waitingForVolume.compactMapValues { paths in
-            let kept = paths.filter(isStillWatched)
-            return kept.isEmpty ? nil : kept
-        }
-    }
-
-    /// Runs the rules again on the files that couldn't be moved or copied
-    /// because the disk or share mounted at `mountPoint` wasn't connected.
-    public func volumeDidMount(atPath mountPoint: String) {
-        let volume = (mountPoint as NSString).lastPathComponent
-        processingQueue.async { [weak self] in
-            self?.retryWaiting(forVolume: volume)
-        }
-    }
-
-    private func retryWaiting(forVolume volume: String) {
-        guard let paths = waitingForVolume.removeValue(forKey: volume) else { return }
-        for path in paths.sorted() {
-            // A file waiting on several volumes is retried once; it waits
-            // again for whichever is still missing.
-            waitingForVolume = waitingForVolume.compactMapValues { waiting in
-                let kept = waiting.subtracting([path])
-                return kept.isEmpty ? nil : kept
-            }
-            handle(path: path, retrying: true)
-        }
+        keepWaiting(where: isStillWatched)
     }
 
     private static func isPath(_ path: String, under root: String) -> Bool {
@@ -255,8 +220,7 @@ public final class WatcherCoordinator: @unchecked Sendable {
         return activeProcessingRoots[root, default: 0] > 0
     }
 
-    /// `retrying` runs the rules on a file that was already evaluated, once
-    /// the disk or share they failed on is connected.
+    /// `retrying` runs the rules even though the file hasn't changed.
     func handle(path: String, retrying: Bool = false) {
         // A duplicate/coalesced FSEvent for a path a prior call already
         // moved away — common with FSEvents — would otherwise be replanned
@@ -278,18 +242,7 @@ public final class WatcherCoordinator: @unchecked Sendable {
         guard let depth = RuleEngine.pathDepth(root: folder.path, path: path) else { return }
         let batchId = UUID().uuidString
         let (matched, history) = RuleEngine.run(path: path, depth: depth, rules: rules, batchId: batchId, root: folder.path)
-        for ruleName in matched {
-            onRuleMatched?(ruleName, path)
-        }
-        if !history.isEmpty {
-            db.withLock { db in
-                try? db.insertHistoryEntries(history)
-            }
-            recordEvaluatedResultStates(history)
-            notifyActivity(from: history)
-            waitForDisconnectedVolumes(history, path: path, rules: rules)
-        }
-        recordEvaluatedState(path)
+        record(matched: matched, history: history, path: path, rules: rules)
     }
 
     private func beginProcessing(root: String) {
@@ -410,6 +363,11 @@ public final class WatcherCoordinator: @unchecked Sendable {
 
         let batchId = UUID().uuidString
         let (matched, history) = RuleEngine.run(path: path, depth: depth, rules: rules, batchId: batchId, root: watchedRoot)
+        record(matched: matched, history: history, path: path, rules: rules)
+    }
+
+    /// Persists what a run on `path` did and tells whoever listens.
+    private func record(matched: [String], history: [HistoryEntry], path: String, rules: [Rule]) {
         for ruleName in matched {
             onRuleMatched?(ruleName, path)
         }
@@ -419,47 +377,10 @@ public final class WatcherCoordinator: @unchecked Sendable {
             }
             recordEvaluatedResultStates(history)
             notifyActivity(from: history)
+            onHistoryRecorded?()
             waitForDisconnectedVolumes(history, path: path, rules: rules)
         }
         recordEvaluatedState(path)
-    }
-
-    /// Reports a failed move or copy whose destination disk or share isn't
-    /// connected, and keeps the file to run its rules again when it is.
-    private func waitForDisconnectedVolumes(_ history: [HistoryEntry], path: String, rules: [Rule]) {
-        let volumes = Self.disconnectedVolumes(in: history, rules: rules)
-        guard !volumes.isEmpty else { return }
-        // Running the rules again redoes every action on the file: only safe
-        // when none was applied this time (a copy made before the failed move
-        // would be made twice).
-        let willRetry = !history.contains { $0.status == .applied }
-        if willRetry {
-            for volume in volumes {
-                waitingForVolume[volume, default: []].insert(path)
-            }
-        }
-        let failed = history.filter { $0.status == .failed }
-        onVolumeUnavailable?(VolumeUnavailableEvent(
-            volumes: volumes,
-            ruleNames: Array(Set(failed.map(\.ruleName))).sorted(),
-            willRetry: willRetry
-        ))
-    }
-
-    /// The disks or shares, by name, that the failed moves and copies in
-    /// `history` were headed to and that aren't connected.
-    static func disconnectedVolumes(in history: [HistoryEntry], rules: [Rule]) -> [String] {
-        var volumes = Set<String>()
-        for entry in history where entry.status == .failed && [.moveToFolder, .copyToFolder].contains(entry.actionKind) {
-            guard let rule = rules.first(where: { $0.id == entry.ruleId }) else { continue }
-            for action in rule.actions where action.kind == entry.actionKind {
-                guard let destination = action.params[ActionParam.destination]?.stringValue,
-                      let volume = VolumePaths.unmountedVolume(of: destination)
-                else { continue }
-                volumes.insert(volume)
-            }
-        }
-        return volumes.sorted()
     }
 
     private func notifyActivity(from history: [HistoryEntry]) {

@@ -53,7 +53,7 @@ struct RuleListView: View {
                 actionBar
             }
 
-            if let runNowMessage = model.runNowMessage {
+            if let runNowMessage = model.runNowMessageForSelectedFolder {
                 runNowBanner(runNowMessage)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -85,7 +85,7 @@ struct RuleListView: View {
                 .scrollIndicators(.never)
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: model.runNowMessage)
+        .animation(.easeInOut(duration: 0.25), value: model.runNowMessageForSelectedFolder)
         .padding(16)
         .frame(minWidth: 460)
         .background(ForelTheme.background)
@@ -110,7 +110,7 @@ struct RuleListView: View {
             if message.hasFailures {
                 Button {
                     model.dismissRunNowMessage()
-                    model.showActivity(forFolder: model.selectedFolderId)
+                    model.showActivity(forFolder: message.folderId)
                 } label: {
                     Text("Show in Activity").underline()
                 }

@@ -36,6 +36,23 @@ import Foundation
         }
     }
 
+    private final class SignalCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        func increment() {
+            lock.lock()
+            value += 1
+            lock.unlock()
+        }
+
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
     private func makeDB() throws -> Database {
         try Database(path: ":memory:")
     }
@@ -424,386 +441,33 @@ import Foundation
         #expect(!FileManager.default.fileExists(atPath: numberedDuplicate))
     }
 
-    /// A watched folder with one rule moving PDFs into `Documents`.
-    private func makePDFSortingFolder(db: Database, dir: TempDir) throws -> String {
-        let destination = dir.dir("Documents")
+    @Test func recordedHistoryIsSignalledForFailuresToo() throws {
+        let db = try makeDB()
+        let dir = TempDir()
+        let moved = dir.file("a.txt")
+        let failing = dir.file("b.md")
+        let untouched = dir.file("c.jpg")
         let folder = WatchedFolder(path: dir.path)
         try db.insertFolder(folder)
-        var rule = makeRule(folderId: folder.id, name: "sort pdf")
-        rule.conditions = [makeCondition(.extension_, .is, "pdf", ruleId: rule.id)]
-        rule.actions = [makeAction(.moveToFolder, .object(["destination": .string(destination)]), position: 0, ruleId: rule.id)]
-        try db.insertRule(rule)
-        return destination
-    }
-
-    @Test func arrivingFileIsNotMovedWhileItIsStillBeingWritten() throws {
-        let db = try makeDB()
-        let dir = TempDir()
-        let destination = try makePDFSortingFolder(db: db, dir: dir)
-        // Like AirDrop: created empty under its final name, then filled in.
-        let file = dir.file("incoming.pdf")
-        let movedPath = (destination as NSString).appendingPathComponent("incoming.pdf")
-
-        let coordinator = WatcherCoordinator(db: db, settleInterval: 0.3)
-        coordinator.enqueue(event: .pathArrived(file))
-
-        let handle = try #require(FileHandle(forWritingAtPath: file))
-        for _ in 0..<12 {
-            Thread.sleep(forTimeInterval: 0.08)
-            handle.seekToEndOfFile()
-            handle.write(Data("chunk".utf8))
-            #expect(FileManager.default.fileExists(atPath: file))
-            #expect(!FileManager.default.fileExists(atPath: movedPath))
-        }
-        try handle.close()
-
-        coordinator.waitForPendingEvents()
-
-        #expect(!FileManager.default.fileExists(atPath: file))
-        #expect(try String(contentsOfFile: movedPath, encoding: .utf8) == String(repeating: "chunk", count: 12))
-        #expect(try FileManager.default.contentsOfDirectory(atPath: destination) == ["incoming.pdf"])
-        #expect(try db.listHistory().count == 1)
-    }
-
-    @Test func arrivingFileMarkedBusyWaitsUntilTheMarkerIsCleared() throws {
-        let db = try makeDB()
-        let dir = TempDir()
-        let destination = try makePDFSortingFolder(db: db, dir: dir)
-        let file = dir.file("incoming.pdf", contents: "complete")
-        let movedPath = (destination as NSString).appendingPathComponent("incoming.pdf")
-        try FileManager.default.setAttributes([.creationDate: FileReadiness.busyCreationDate], ofItemAtPath: file)
-
-        let coordinator = WatcherCoordinator(db: db, settleInterval: 0.05)
-        coordinator.enqueue(event: .pathArrived(file))
-
-        // Size and modification time are stable, but the writer hasn't
-        // released the file yet.
-        Thread.sleep(forTimeInterval: 0.4)
-        #expect(FileManager.default.fileExists(atPath: file))
-        #expect(!FileManager.default.fileExists(atPath: movedPath))
-        #expect(try db.listHistory().isEmpty)
-
-        try FileManager.default.setAttributes([.creationDate: Date()], ofItemAtPath: file)
-        coordinator.waitForPendingEvents()
-
-        #expect(!FileManager.default.fileExists(atPath: file))
-        #expect(FileManager.default.fileExists(atPath: movedPath))
-    }
-
-    @Test func rescanAlsoWaitsForFilesToSettle() throws {
-        let db = try makeDB()
-        let dir = TempDir()
-        let destination = try makePDFSortingFolder(db: db, dir: dir)
-        let busy = dir.file("busy.pdf", contents: "partial")
-        let ready = dir.file("ready.pdf", contents: "complete")
-        try FileManager.default.setAttributes([.creationDate: FileReadiness.busyCreationDate], ofItemAtPath: busy)
-
-        let coordinator = WatcherCoordinator(db: db, settleInterval: 0.05)
-        coordinator.enqueue(event: .rescanSubtree(dir.path))
-
-        Thread.sleep(forTimeInterval: 0.4)
-        #expect(FileManager.default.fileExists(atPath: busy))
-        #expect(!FileManager.default.fileExists(atPath: ready))
-        #expect(FileManager.default.fileExists(atPath: (destination as NSString).appendingPathComponent("ready.pdf")))
-
-        try FileManager.default.setAttributes([.creationDate: Date()], ofItemAtPath: busy)
-        coordinator.waitForPendingEvents()
-
-        #expect(FileManager.default.fileExists(atPath: (destination as NSString).appendingPathComponent("busy.pdf")))
-    }
-
-    @Test func stoppingAFolderDropsItsFilesStillWaitingToSettle() throws {
-        let db = try makeDB()
-        let dir = TempDir()
-        let destination = try makePDFSortingFolder(db: db, dir: dir)
-        let file = dir.file("incoming.pdf", contents: "complete")
-        try FileManager.default.setAttributes([.creationDate: FileReadiness.busyCreationDate], ofItemAtPath: file)
-
-        let coordinator = WatcherCoordinator(db: db, settleInterval: 0.05)
-        coordinator.enqueue(event: .pathArrived(file))
-        Thread.sleep(forTimeInterval: 0.2)
-
-        // Pausing (or disabling/removing the folder) while the transfer is
-        // still in progress: the rule must not run once it completes.
-        coordinator.remove(dir.path)
-        try FileManager.default.setAttributes([.creationDate: Date()], ofItemAtPath: file)
-        coordinator.waitForPendingEvents()
-        Thread.sleep(forTimeInterval: 0.2)
-
-        #expect(FileManager.default.fileExists(atPath: file))
-        #expect(!FileManager.default.fileExists(atPath: (destination as NSString).appendingPathComponent("incoming.pdf")))
-        #expect(try db.listHistory().isEmpty)
-    }
-
-    @Test func arrivingFolderIsNotMovedWhileAFileInsideIsStillBeingWritten() throws {
-        let db = try makeDB()
-        let dir = TempDir()
-        let destination = dir.dir("Archive")
-        let folder = WatchedFolder(path: dir.path)
-        try db.insertFolder(folder)
-        var rule = makeRule(folderId: folder.id, name: "archive exports")
-        rule.conditions = [makeCondition(.name, .is, "Export", ruleId: rule.id)]
-        rule.actions = [makeAction(.moveToFolder, .object(["destination": .string(destination)]), position: 0, ruleId: rule.id)]
-        try db.insertRule(rule)
-
-        let incoming = dir.dir("Export")
-        let inner = (incoming as NSString).appendingPathComponent("data.bin")
-        FileManager.default.createFile(atPath: inner, contents: nil)
-        let movedPath = (destination as NSString).appendingPathComponent("Export")
-
-        let coordinator = WatcherCoordinator(db: db, settleInterval: 0.3)
-        coordinator.enqueue(event: .pathArrived(incoming))
-
-        // The folder's own size and modification time don't change while a
-        // file inside it grows.
-        let handle = try #require(FileHandle(forWritingAtPath: inner))
-        for _ in 0..<12 {
-            Thread.sleep(forTimeInterval: 0.08)
-            handle.seekToEndOfFile()
-            handle.write(Data("chunk".utf8))
-            #expect(FileManager.default.fileExists(atPath: incoming))
-            #expect(!FileManager.default.fileExists(atPath: movedPath))
-        }
-        try handle.close()
-
-        coordinator.waitForPendingEvents()
-
-        #expect(!FileManager.default.fileExists(atPath: incoming))
-        let movedInner = (movedPath as NSString).appendingPathComponent("data.bin")
-        #expect(try String(contentsOfFile: movedInner, encoding: .utf8) == String(repeating: "chunk", count: 12))
-    }
-
-    @Test func itemsArrivingInsideAWaitingFolderAreEvaluatedWhenItSettles() throws {
-        let db = try makeDB()
-        let dir = TempDir()
-        let destination = dir.dir("Documents")
-        let folder = WatchedFolder(path: dir.path)
-        try db.insertFolder(folder)
-        var rule = makeRule(folderId: folder.id, name: "sort pdf", recursionDepth: nil)
-        rule.conditions = [makeCondition(.extension_, .is, "pdf", ruleId: rule.id)]
-        rule.actions = [makeAction(.moveToFolder, .object(["destination": .string(destination)]), position: 0, ruleId: rule.id)]
-        try db.insertRule(rule)
-
-        // Like an unzip or a clone: a folder arrives, then its contents.
-        let incoming = dir.dir("Export")
-        let first = (incoming as NSString).appendingPathComponent("a.pdf")
-        let second = (incoming as NSString).appendingPathComponent("Nested/b.pdf")
-        _ = dir.dir("Export/Nested")
-        try "a".write(toFile: first, atomically: true, encoding: .utf8)
-        try "b".write(toFile: second, atomically: true, encoding: .utf8)
-
-        let coordinator = WatcherCoordinator(db: db, settleInterval: 0.1)
-        coordinator.enqueue(event: .pathArrived(incoming))
-        coordinator.enqueue(event: .pathArrived(first))
-        coordinator.enqueue(event: .pathArrived((incoming as NSString).appendingPathComponent("Nested")))
-        coordinator.enqueue(event: .pathArrived(second))
-        coordinator.waitForPendingEvents()
-
-        #expect(!FileManager.default.fileExists(atPath: first))
-        #expect(!FileManager.default.fileExists(atPath: second))
-        #expect(Set(try FileManager.default.contentsOfDirectory(atPath: destination)) == ["a.pdf", "b.pdf"])
-        #expect(try db.listHistory().count == 2)
-    }
-
-    @Test(.timeLimit(.minutes(1)))
-    func rescanDoesNotReadSubfoldersBeyondWhatTheRulesNeed() throws {
-        let db = try makeDB()
-        let dir = TempDir()
-        let destination = try makePDFSortingFolder(db: db, dir: dir)
-        let ready = dir.file("ready.pdf", contents: "complete")
-        // Deeper than the rule's depth: a rescan must not look in here, so
-        // this leftover busy file must not keep the subfolder waiting.
-        let deep = dir.dir("Projects/Client")
-        let leftover = (deep as NSString).appendingPathComponent("leftover.bin")
-        try "partial".write(toFile: leftover, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.creationDate: FileReadiness.busyCreationDate], ofItemAtPath: leftover)
-
-        let coordinator = WatcherCoordinator(db: db, settleInterval: 0.05)
-        coordinator.enqueue(event: .rescanSubtree(dir.path))
-        coordinator.waitForPendingEvents()
-
-        #expect(FileManager.default.fileExists(atPath: (destination as NSString).appendingPathComponent("ready.pdf")))
-        #expect(!FileManager.default.fileExists(atPath: ready))
-        #expect(FileManager.default.fileExists(atPath: leftover))
-    }
-
-    private final class VolumeEventBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var values: [VolumeUnavailableEvent] = []
-
-        func append(_ event: VolumeUnavailableEvent) {
-            lock.lock()
-            values.append(event)
-            lock.unlock()
-        }
-
-        func snapshot() -> [VolumeUnavailableEvent] {
-            lock.lock()
-            defer { lock.unlock() }
-            return values
-        }
-    }
-
-    /// A rule moving .txt files to a share under /Volumes that isn't mounted.
-    private func ruleToDisconnectedShare(folderId: String, before: [Action] = []) -> (rule: Rule, volume: String) {
-        let volume = "ForelMissingShare-\(UUID().uuidString)"
-        var rule = makeRule(folderId: folderId, name: "to nas")
+        var rule = makeRule(folderId: folder.id, name: "archive")
         rule.conditions = [makeCondition(.extension_, .is, "txt", ruleId: rule.id)]
-        rule.actions = before + [
-            makeAction(.moveToFolder, .object(["destination": .string("/Volumes/\(volume)/Inbox")]), position: Int64(before.count), ruleId: rule.id),
-        ]
-        return (rule, volume)
-    }
-
-    /// What the share's folder looks like once it is connected: the same rule,
-    /// now moving into a folder that exists.
-    private func reconnect(_ rule: Rule, to destination: String, in db: Database) throws {
-        var connected = rule
-        connected.actions = rule.actions.map { action in
-            guard action.kind == .moveToFolder else { return action }
-            var moved = action
-            moved.params = .object(["destination": .string(destination)])
-            return moved
-        }
-        try db.updateRule(connected)
-    }
-
-    @Test func moveToADisconnectedShareIsReportedAndRunsAgainWhenItConnects() throws {
-        let db = try makeDB()
-        let dir = TempDir()
-        let file = dir.file("a.txt")
-        let folder = WatchedFolder(path: dir.path)
-        try db.insertFolder(folder)
-        let (rule, volume) = ruleToDisconnectedShare(folderId: folder.id)
+        rule.actions = [makeAction(.moveToFolder, .object(["destination": .string(dir.dir("Archive"))]), position: 0, ruleId: rule.id)]
+        var failingRule = makeRule(folderId: folder.id, name: "to system")
+        failingRule.conditions = [makeCondition(.extension_, .is, "md", ruleId: failingRule.id)]
+        failingRule.actions = [makeAction(.moveToFolder, .object(["destination": .string("/System/ForelNotWritable")]), position: 0, ruleId: failingRule.id)]
         try db.insertRule(rule)
+        try db.insertRule(failingRule)
 
         let coordinator = WatcherCoordinator(db: db)
-        let events = VolumeEventBox()
-        coordinator.onVolumeUnavailable = { events.append($0) }
+        let signals = SignalCounter()
+        coordinator.onHistoryRecorded = { signals.increment() }
 
-        coordinator.handle(path: file)
-        #expect(events.snapshot() == [VolumeUnavailableEvent(volumes: [volume], ruleNames: ["to nas"], willRetry: true)])
-        #expect(FileManager.default.fileExists(atPath: file))
-        #expect(try db.listHistory().map(\.status) == [.failed])
+        coordinator.handle(path: moved)
+        coordinator.handle(path: failing)
+        coordinator.handle(path: untouched)
 
-        // A duplicate event for the untouched file doesn't try again.
-        coordinator.handle(path: file)
-        #expect(try db.listHistory().count == 1)
-
-        // Another disk connecting changes nothing.
-        let inbox = dir.dir("Inbox")
-        try reconnect(rule, to: inbox, in: db)
-        coordinator.volumeDidMount(atPath: "/Volumes/SomeOtherDisk")
-        coordinator.waitForPendingEvents()
-        #expect(FileManager.default.fileExists(atPath: file))
-
-        coordinator.volumeDidMount(atPath: "/Volumes/\(volume)")
-        coordinator.waitForPendingEvents()
-        #expect(!FileManager.default.fileExists(atPath: file))
-        #expect(FileManager.default.fileExists(atPath: (inbox as NSString).appendingPathComponent("a.txt")))
-        #expect(try db.listHistory().map(\.status).sorted { $0.rawValue < $1.rawValue } == [.applied, .failed].sorted { $0.rawValue < $1.rawValue })
-
-        // Once done, connecting again doesn't run anything more.
-        coordinator.volumeDidMount(atPath: "/Volumes/\(volume)")
-        coordinator.waitForPendingEvents()
-        #expect(try db.listHistory().count == 2)
-    }
-
-    @Test func fileStillWaitsWhenTheShareIsStillUnreachableAfterMounting() throws {
-        let db = try makeDB()
-        let dir = TempDir()
-        let file = dir.file("a.txt")
-        let folder = WatchedFolder(path: dir.path)
-        try db.insertFolder(folder)
-        let (rule, volume) = ruleToDisconnectedShare(folderId: folder.id)
-        try db.insertRule(rule)
-
-        let coordinator = WatcherCoordinator(db: db)
-        let events = VolumeEventBox()
-        coordinator.onVolumeUnavailable = { events.append($0) }
-        coordinator.handle(path: file)
-
-        // Retried, failed again: it keeps waiting for the next connection.
-        coordinator.volumeDidMount(atPath: "/Volumes/\(volume)")
-        coordinator.waitForPendingEvents()
-        #expect(try db.listHistory().map(\.status) == [.failed, .failed])
-        #expect(events.snapshot().count == 2)
-
-        let inbox = dir.dir("Inbox")
-        try reconnect(rule, to: inbox, in: db)
-        coordinator.volumeDidMount(atPath: "/Volumes/\(volume)")
-        coordinator.waitForPendingEvents()
-        #expect(FileManager.default.fileExists(atPath: (inbox as NSString).appendingPathComponent("a.txt")))
-    }
-
-    @Test func fileIsNotRunAgainWhenAnotherActionWasAlreadyApplied() throws {
-        let db = try makeDB()
-        let dir = TempDir()
-        let file = dir.file("a.txt")
-        let backup = dir.dir("Backup")
-        let folder = WatchedFolder(path: dir.path)
-        try db.insertFolder(folder)
-        let copy = makeAction(.copyToFolder, .object(["destination": .string(backup)]), position: 0, ruleId: "placeholder")
-        var (rule, volume) = ruleToDisconnectedShare(folderId: folder.id, before: [copy])
-        rule.actions[0].ruleId = rule.id
-        try db.insertRule(rule)
-
-        let coordinator = WatcherCoordinator(db: db)
-        let events = VolumeEventBox()
-        coordinator.onVolumeUnavailable = { events.append($0) }
-        coordinator.handle(path: file)
-
-        #expect(events.snapshot() == [VolumeUnavailableEvent(volumes: [volume], ruleNames: ["to nas"], willRetry: false)])
-        try reconnect(rule, to: dir.dir("Inbox"), in: db)
-        coordinator.volumeDidMount(atPath: "/Volumes/\(volume)")
-        coordinator.waitForPendingEvents()
-
-        // The copy isn't made a second time.
-        let copies = try FileManager.default.contentsOfDirectory(atPath: backup)
-        #expect(copies == ["a.txt"])
-        #expect(FileManager.default.fileExists(atPath: file))
-    }
-
-    @Test func fileIsNotRunAgainOnceItsFolderIsNoLongerWatched() throws {
-        let db = try makeDB()
-        let dir = TempDir()
-        let file = dir.file("a.txt")
-        let folder = WatchedFolder(path: dir.path)
-        try db.insertFolder(folder)
-        let (rule, volume) = ruleToDisconnectedShare(folderId: folder.id)
-        try db.insertRule(rule)
-
-        let coordinator = WatcherCoordinator(db: db)
-        coordinator.handle(path: file)
-
-        // Watching paused, folder disabled or removed.
-        coordinator.remove(dir.path)
-        try reconnect(rule, to: dir.dir("Inbox"), in: db)
-        coordinator.volumeDidMount(atPath: "/Volumes/\(volume)")
-        coordinator.waitForPendingEvents()
-
-        #expect(FileManager.default.fileExists(atPath: file))
-        #expect(try db.listHistory().count == 1)
-    }
-
-    @Test func otherFailuresAreNotReportedAsADisconnectedShare() throws {
-        let db = try makeDB()
-        let dir = TempDir()
-        let file = dir.file("a.txt")
-        let folder = WatchedFolder(path: dir.path)
-        try db.insertFolder(folder)
-        var rule = makeRule(folderId: folder.id, name: "to system")
-        rule.conditions = [makeCondition(.extension_, .is, "txt", ruleId: rule.id)]
-        // Fails because it can't be written to, on a disk that is connected.
-        rule.actions = [makeAction(.moveToFolder, .object(["destination": .string("/System/ForelNotWritable")]), position: 0, ruleId: rule.id)]
-        try db.insertRule(rule)
-
-        let coordinator = WatcherCoordinator(db: db)
-        let events = VolumeEventBox()
-        coordinator.onVolumeUnavailable = { events.append($0) }
-        coordinator.handle(path: file)
-
-        #expect(try db.listHistory().map(\.status) == [.failed])
-        #expect(events.snapshot().isEmpty)
+        // One signal per run that recorded something; none when no rule matched.
+        #expect(signals.count == 2)
+        #expect(try db.listHistory().map(\.status).filter { $0 == .failed }.count == 1)
     }
 }

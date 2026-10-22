@@ -18,6 +18,7 @@ import AppKit
 import SwiftUI
 import Combine
 import ForelCore
+import Lab421Licensing
 
 /// Menu-bar item: Forel glyph with a green/red status dot. Clicking it shows
 /// a SwiftUI quick panel (`QuickPanelView`) styled as a dark glass popover,
@@ -27,18 +28,23 @@ final class StatusBarController: NSObject {
     private let statusItem: NSStatusItem
     private let model: AppModel
     private let updater: UpdaterManager
+    private let license: ForelLicenseManager
     private let onOpenMainWindow: () -> Void
     private var popover: NSPopover?
     private var localDismissMonitor: Any?
     private var globalDismissMonitor: Any?
     private var pausedSubscription: AnyCancellable?
     private var updateSubscription: AnyCancellable?
+    private var licenseSubscription: AnyCancellable?
+    private var onOpenLicense: (() -> Void)?
 
-    init(model: AppModel, updater: UpdaterManager, onOpenMainWindow: @escaping () -> Void) {
+    init(model: AppModel, updater: UpdaterManager, license: ForelLicenseManager, onOpenMainWindow: @escaping () -> Void, onOpenLicense: (() -> Void)? = nil) {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.model = model
         self.updater = updater
+        self.license = license
         self.onOpenMainWindow = onOpenMainWindow
+        self.onOpenLicense = onOpenLicense
         super.init()
 
         if let button = statusItem.button {
@@ -55,6 +61,10 @@ final class StatusBarController: NSObject {
             guard let self else { return }
             self.refreshGlyph(paused: self.model.paused)
         }
+        licenseSubscription = license.$state.sink { [weak self] _ in
+            guard let self else { return }
+            self.refreshGlyph(paused: self.model.paused)
+        }
     }
 
     private func refreshGlyph(paused: Bool) {
@@ -67,18 +77,27 @@ final class StatusBarController: NSObject {
             return
         }
 
-        let panel = QuickPanelView(
+        var panel = QuickPanelView(
             onOpenMainWindow: { [weak self] in
                 self?.popover?.performClose(nil)
                 self?.onOpenMainWindow()
             },
             onQuit: { NSApp.terminate(nil) }
         )
-        .environmentObject(model)
-        .environmentObject(updater)
+        panel.onOpenLicense = { [weak self] in
+            self?.popover?.performClose(nil)
+            self?.onOpenLicense?()
+        }
+
+        let hostingController = NSHostingController(
+            rootView: panel
+                .environmentObject(model)
+                .environmentObject(updater)
+                .environmentObject(license)
+        )
 
         let newPopover = NSPopover()
-        newPopover.contentViewController = NSHostingController(rootView: panel)
+        newPopover.contentViewController = hostingController
         newPopover.behavior = .transient
         newPopover.delegate = self
         popover = newPopover

@@ -15,6 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import AppKit
+import Combine
+import ForelCore
+import Lab421Licensing
 
 /// Closing the window hides it instead of quitting; Forel keeps running in
 /// the menu bar. Quit is only available from the status item menu.
@@ -29,6 +32,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var statusBarController: StatusBarController?
     private var model: AppModel?
     private var updater: UpdaterManager?
+    let license = ForelLicenseManager(
+        isEnabled: BuildCapabilities.current.usesDirectLicensing,
+        productID: ForelLicensing.productID,
+        appName: ForelLicensing.appName,
+        deviceNameFallback: "This Mac",
+        secureStore: ForelKeychainLicenseStore(
+            service: ForelLicensing.keychainService,
+            userDefaultsSuiteName: ForelLicensing.userDefaultsSuite
+        ),
+        deviceIdentifierProvider: HardwareDeviceIdentifierProvider(userDefaultsSuiteName: ForelLicensing.userDefaultsSuite),
+        offlineTokenPublicKeyRaw: ForelLicensing.productionPublicKeyRaw,
+        baseURL: ForelLicensing.baseURL
+    )
+    let settingsNavigation = SettingsNavigation()
+    private var subscriptions = Set<AnyCancellable>()
     /// The window hosting `ContentView`, reported by `ForelMacApp` through
     /// `mainWindowDidAttach`. Tracked explicitly rather than looked up in
     /// `NSApp.windows`, which also holds the menu bar item's own window and
@@ -48,6 +66,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.applyDockIconPreference()
         setUpStatusBar()
         showMainWindowOnFirstLaunch()
+
+        model.setLicenseAccessLimited(!license.hasAccess)
+        // `dropFirst()` skips the state already accounted for above, so a
+        // fresh subscriber doesn't double-apply the state it was created
+        // with — matching the `hasAccess` snapshot immediately before this.
+        license.$state
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] state in
+                guard let self else { return }
+                self.model?.setLicenseAccessLimited(state == .free)
+            }
+            .store(in: &subscriptions)
+        license.start()
     }
 
     /// Called whenever `ContentView` lands in a window — at launch, or later
@@ -151,8 +183,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusBarController = StatusBarController(
             model: model,
             updater: updater,
-            onOpenMainWindow: { [weak self] in self?.openMainWindow() }
+            license: license,
+            onOpenMainWindow: { [weak self] in self?.openMainWindow() },
+            onOpenLicense: { [weak self] in self?.prepareLicenseSettings() }
         )
+    }
+
+    /// Selects the License tab and activates Forel before the quick panel
+    /// opens the Settings scene using SwiftUI's openSettings action.
+    private func prepareLicenseSettings() {
+        settingsNavigation.selectedCategory = .license
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func openMainWindow() {

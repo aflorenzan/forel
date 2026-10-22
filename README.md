@@ -74,7 +74,7 @@ File matching and processing happen **locally on your Mac**. Forel does not uplo
 
 - **Rule-based automation** — Create flexible rules combining filename patterns, file types, sizes, dates, tags, and Finder color labels.
 - **Content matching & OCR** — Match text inside documents, images, and scanned PDFs using local extraction and on-device OCR. See [Content matching](#content-matching) for supported formats and limits.
-- **Folder watching** — Monitor any number of folders in real time with native macOS FSEvents.
+- **Folder watching** — Monitor folders in real time with native macOS FSEvents: up to 2 in Free, unlimited in Pro.
 - **Dry Run & Run Now** — Preview matching files and planned actions without changing files, then run rules manually on existing files when ready.
 - **History & Undo** — Review action results and undo supported actions when it is safe to do so.
 - **Menu bar app** — Forel lives in your menu bar. Toggle individual rules on/off without opening the main window.
@@ -84,6 +84,36 @@ File matching and processing happen **locally on your Mac**. Forel does not uplo
 ---
 
 ## Installation
+
+Forel Free is available indefinitely without a license. Pro is a paid license; there is no trial.
+
+### Free and Pro
+
+| Feature | Free | Pro |
+|---|---|---|
+| Watched folders | 2, including disabled folders | Unlimited |
+| Files processed | 300 per calendar month | Unlimited |
+| Rules per folder and actions per rule | Unlimited | Unlimited |
+| Background watching and Run Now | Included | Included |
+| Move, copy, rename, tags, labels, trash, delete, uncompress, open app | Included | Included |
+| Filename, type, size, dates, tags, and download metadata conditions | Included | Included |
+| Text matching in documents and PDFs with a text layer | Included | Included |
+| On-device OCR for images and scanned PDFs | — | Included |
+| Custom scripts and Apple Shortcuts | Included | Included |
+| Imports into Photos, Music, and TV | — | Included |
+| Dry Run preview, history, and supported Undo | Included | Included |
+| File processing on your Mac | Included | Included |
+| [Scheduler](#roadmap) | — | Planned |
+| [Sync actions](#roadmap) | — | Planned |
+| [AI features](#roadmap) | — | Planned |
+
+**Free:** organize your everyday folders automatically with rules, custom scripts, and Apple Shortcuts. **Pro:** automate all your folders, process unlimited files, and recognize scanned documents.
+
+[View pricing and buy Forel Pro](https://forel-app.github.io/), then activate your license in **Settings → License**. The Free badge in the quick panel also opens License settings. Monthly file usage is visible in the app; attempting a Pro action or reaching a quota explains the benefit and offers a purchase or activation link.
+
+Free includes **2 watched folders and 300 processed files per calendar month**, with unlimited rules and actions. Each item counts once per run when an action is applied; Dry Run does not count. The allowance renews on the first day of each month. At the limit, files stay in place and automatic processing resumes after renewal or Pro activation.
+
+Switching back to Free keeps your configuration. Reorder folders to choose which 2 remain available. OCR for images and scanned PDFs, and media library imports, require Pro.
 
 ### Homebrew
 
@@ -219,19 +249,21 @@ History / Undo (SQLite)
 - [ ] Export / Import rules
 - [ ] Toggle extension hidden / visible
 - [ ] Move folder based on criteria
-- [ ] Scheduler
+- [ ] Scheduler — **Pro · Coming soon**
 - [ ] Copy rules accros watching folders
 - [ ] Compress actions
-- [ ] Sync actions
+- [ ] Sync actions — **Pro · Coming soon**
 - [ ] Dynamic destination folders with date tokens (e.g. `~/Screenshots/{year}/{month}`)
 - [ ] Upload actions
-- [ ] AI features
+- [ ] AI features — **Pro · Coming soon**
 
 ## Content matching
 
 The **Contents** condition matches text found *inside* files. Everything is read
 locally — no cloud, OCR runs on-device. When a file's text can't be read, the Dry
 Run tells you why.
+
+Document text matching is available in Free and Pro. Vision OCR for images and scanned PDFs requires Pro; Free never runs OCR. The technical extraction limits below apply to both plans where the feature is available.
 
 ```
 File path

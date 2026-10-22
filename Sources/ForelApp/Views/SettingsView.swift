@@ -15,6 +15,17 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import SwiftUI
+import ForelCore
+import Lab421Licensing
+
+/// Shared across the app delegate and `SettingsView` so code outside SwiftUI
+/// (e.g. the status item's "Activate" action, or `AppDelegate` reacting to a
+/// denied license) can select a specific settings tab before opening the
+/// `Settings` scene.
+@MainActor
+final class SettingsNavigation: ObservableObject {
+    @Published var selectedCategory: SettingsCategory = .general
+}
 
 /// Modern macOS Settings layout: a category sidebar on the left (matching
 /// System Settings' own convention), detail content on the right — instead
@@ -22,8 +33,9 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var updater: UpdaterManager
+    @EnvironmentObject var license: ForelLicenseManager
+    @EnvironmentObject var navigation: SettingsNavigation
     @State private var launchAtLogin = LoginItem.isEnabled
-    @State private var selectedCategory: SettingsCategory = .general
 
     var body: some View {
         HStack(spacing: 0) {
@@ -45,8 +57,8 @@ struct SettingsView: View {
             ForEach(SettingsCategory.allCases) { category in
                 SettingsSidebarRow(
                     category: category,
-                    isSelected: selectedCategory == category,
-                    action: { selectedCategory = category }
+                    isSelected: navigation.selectedCategory == category,
+                    action: { navigation.selectedCategory = category }
                 )
             }
             Spacer(minLength: 0)
@@ -59,11 +71,14 @@ struct SettingsView: View {
     private var detail: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                switch selectedCategory {
+                switch navigation.selectedCategory {
                 case .general:
                     generalPane
                 case .permissions:
                     PermissionsSection()
+                case .license:
+                    LicenseSettingsView()
+                        .environmentObject(license)
                 case .updates:
                     updatesPane
                 case .about:
@@ -251,8 +266,8 @@ struct SettingsView: View {
     }
 }
 
-private enum SettingsCategory: CaseIterable, Identifiable {
-    case general, permissions, updates, about
+enum SettingsCategory: CaseIterable, Identifiable {
+    case general, permissions, license, updates, about
 
     var id: Self { self }
 
@@ -260,6 +275,7 @@ private enum SettingsCategory: CaseIterable, Identifiable {
         switch self {
         case .general: "General"
         case .permissions: "Permissions"
+        case .license: "License"
         case .updates: "Updates"
         case .about: "About"
         }
@@ -269,19 +285,17 @@ private enum SettingsCategory: CaseIterable, Identifiable {
         switch self {
         case .general: "gearshape.fill"
         case .permissions: "lock.shield.fill"
+        case .license: "key.fill"
         case .updates: "arrow.triangle.2.circlepath"
         case .about: "info.circle.fill"
         }
     }
 
-    /// A fixed, distinctly-colored badge per category (as in System Settings)
-    /// rather than the single theme accent — it's what makes the sidebar
-    /// scannable at a glance, so it intentionally doesn't follow the user's
-    /// chosen accent color.
     var tint: Color {
         switch self {
         case .general: Color(red: 0.36, green: 0.34, blue: 0.90)
         case .permissions: Color(red: 0.95, green: 0.55, blue: 0.13)
+        case .license: Color(red: 0.20, green: 0.45, blue: 0.80)
         case .updates: Color(red: 0.20, green: 0.70, blue: 0.45)
         case .about: Color(red: 0.31, green: 0.55, blue: 0.95)
         }

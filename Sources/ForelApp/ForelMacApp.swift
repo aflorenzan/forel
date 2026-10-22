@@ -36,6 +36,8 @@ struct ForelMacApp: App {
             ContentView()
                 .environmentObject(model)
                 .environmentObject(updater)
+                .environmentObject(appDelegate.license)
+                .environmentObject(appDelegate.settingsNavigation)
                 .frame(minWidth: 960, minHeight: 520)
                 .background(WindowAccessor { appDelegate.mainWindowDidAttach($0) })
                 .onAppear {
@@ -73,6 +75,8 @@ struct ForelMacApp: App {
             SettingsView()
                 .environmentObject(model)
                 .environmentObject(updater)
+                .environmentObject(appDelegate.license)
+                .environmentObject(appDelegate.settingsNavigation)
         }
         .windowResizability(.contentSize)
     }

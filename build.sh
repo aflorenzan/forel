@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  ./build.sh [command] [arch] [version] [--sign] [--notarize]
+  ./build.sh [command] [flavor] [arch] [version] [--sign] [--notarize]
 
 Commands:
   dev       Build in debug mode and run ForelApp locally
@@ -14,6 +14,9 @@ Commands:
   release   Alias for: build + package
 
 Arguments:
+  flavor    development, ad-hoc, or app-store
+            (dev defaults to development; build/package default to ad-hoc)
+            The test command is flavor-independent and accepts no flavor.
   arch      universal, arm64, or x86_64 (defaults to host architecture)
   version   Release version like v1.2.3
   --sign    Sign the app and DMG with a Developer ID Application certificate
@@ -23,11 +26,12 @@ Arguments:
 Examples:
   ./build.sh
   ./build.sh dev
-  ./build.sh package
+  ./build.sh test
+  ./build.sh build ad-hoc arm64
   ./build.sh package arm64 v1.2.3
-  ./build.sh package arm64 v1.2.3 --sign
-  ./build.sh package arm64 v1.2.3 --sign --notarize
-  ./build.sh package universal v1.2.3 --sign --notarize
+  ./build.sh package ad-hoc arm64 v1.2.3 --sign
+  ./build.sh package ad-hoc arm64 v1.2.3 --sign --notarize
+  ./build.sh package ad-hoc universal v1.2.3 --sign --notarize
   ./build.sh release x86_64 v1.2.3
 EOF
 }
@@ -35,11 +39,12 @@ EOF
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$script_dir"
 dist_dir="$repo_root/dist/release"
-bundle_root="${TMPDIR:-/tmp}/Forel.app"
-dev_bundle="${TMPDIR:-/tmp}/Forel-dev.app"
-staging_root="${TMPDIR:-/tmp}/Forel-dmg"
+temp_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+bundle_root="$temp_root/Forel.app"
+dev_bundle="$temp_root/Forel-dev.app"
+staging_root="$temp_root/Forel-dmg"
 icon_source="$repo_root/Sources/ForelApp/Resources/AppIcon.png"
-iconset_dir="${TMPDIR:-/tmp}/Forel.iconset"
+iconset_dir="$temp_root/Forel.iconset"
 icns_path="$repo_root/dist/Forel.icns"
 entitlements_path="$repo_root/Forel.entitlements"
 code_sign_identity="${CODE_SIGN_IDENTITY:--}"
@@ -161,7 +166,7 @@ notarize_and_staple() {
 
 swift_release_build() {
   local build_arch="$1"
-  local build_args=(-c release)
+  local build_args=(-c release "${swift_flags[@]}")
 
   if [[ "$build_arch" == "universal" ]]; then
     build_args+=(--arch arm64 --arch x86_64)
@@ -185,6 +190,47 @@ if [[ $# -gt 0 ]]; then
       ;;
   esac
 fi
+
+if [[ "$command" == "test" ]]; then
+  if [[ $# -gt 0 ]]; then
+    echo "The test command does not accept a build flavor." >&2
+    exit 1
+  fi
+  flavor="development"
+else
+  if [[ "$command" == "dev" ]]; then
+    flavor="development"
+  else
+    flavor="ad-hoc"
+  fi
+
+  if [[ $# -gt 0 ]]; then
+    case "$1" in
+      development|ad-hoc|app-store)
+        flavor="$1"
+        shift
+        ;;
+    esac
+  fi
+fi
+
+case "$flavor" in
+  development)
+    compilation_condition="FOREL_BUILD_DEVELOPMENT"
+    ;;
+  ad-hoc)
+    compilation_condition="FOREL_BUILD_AD_HOC"
+    ;;
+  app-store)
+    compilation_condition="FOREL_BUILD_APP_STORE"
+    ;;
+  *)
+    echo "Unsupported build flavor: $flavor" >&2
+    exit 1
+    ;;
+esac
+
+swift_flags=(-Xswiftc "-D$compilation_condition")
 
 sign_requested=false
 notarize_requested=false
@@ -252,7 +298,7 @@ if [[ "$notarize_requested" == true ]]; then
     echo "Notarization requires NOTARY_API_KEY_P8, NOTARY_KEY_ID, and NOTARY_ISSUER_ID" >&2
     exit 1
   fi
-  notary_work="$(mktemp -d "${TMPDIR:-/tmp}/Forel-notary.XXXXXX")"
+  notary_work="$(mktemp -d "$temp_root/Forel-notary.XXXXXX")"
   printf '%s' "$NOTARY_API_KEY_P8" | base64 --decode > "$notary_work/AuthKey.p8"
   chmod 600 "$notary_work/AuthKey.p8"
 fi
@@ -265,14 +311,15 @@ case "$command" in
     # the bundle identity declared in Info.plist; an unbundled binary has none,
     # so those checks get misattributed to whatever launched it (e.g. the
     # terminal you're using) instead of Forel, making them unreliable to test.
-    swift build
+    swift build "${swift_flags[@]}"
 
-    build_products_dir="$(swift build --show-bin-path)"
+    build_products_dir="$(swift build "${swift_flags[@]}" --show-bin-path)"
     assemble_app_bundle "$build_products_dir" "$dev_bundle"
     contents_dir="$dev_bundle/Contents"
     macos_dir="$contents_dir/MacOS"
 
-    write_info_plist "$contents_dir" "0.0.0-dev"
+    write_info_plist "$contents_dir" "0.0.0-dev" '  <key>ForelBuildFlavor</key>
+  <string>development</string>'
 
     # Ad-hoc sign so TCC has a stable bundle identity to attach grants to.
     codesign --force --deep --sign - "$dev_bundle" >/dev/null 2>&1
@@ -289,6 +336,8 @@ case "$command" in
 
   test)
     cd "$repo_root"
+    # Tests use the development flavor (no direct licensing), so no
+    # compilation condition is passed — plain `swift test` works as before.
     swift test
     ;;
 
@@ -343,7 +392,9 @@ case "$command" in
     write_info_plist "$contents_dir" "$version_number" '  <key>CFBundleIconFile</key>
   <string>Forel</string>
   <key>LSApplicationCategoryType</key>
-  <string>public.app-category.productivity</string>'
+  <string>public.app-category.productivity</string>
+  <key>ForelBuildFlavor</key>
+  <string>'"$flavor"'</string>'
 
     if [[ -f "$icns_path" ]]; then
       cp "$icns_path" "$bundle_root/Contents/Resources/Forel.icns"

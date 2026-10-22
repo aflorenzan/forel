@@ -193,7 +193,7 @@ jobs:
             echo ""
             echo "Download \`Forel-${RELEASE_TAG}.dmg\` — one universal build for Apple Silicon and Intel Macs."
             echo ""
-            echo "Requires **macOS 13 Ventura or later**."
+            echo "Requires **macOS 14 Sonoma or later**."
             echo ""
             echo "1. Download \`Forel-${RELEASE_TAG}.dmg\`."
             echo "2. Open it and drag **Forel** into **Applications**."

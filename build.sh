@@ -130,7 +130,7 @@ write_info_plist() {
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © 2026 Lab421</string>
   <key>LSMinimumSystemVersion</key>
-  <string>13.0</string>
+  <string>14.0</string>
   <key>LSUIElement</key>
   <true/>
   <key>NSHighResolutionCapable</key>

@@ -189,9 +189,9 @@ public enum ConditionEvaluator {
         }
         guard rc == 0 else { return nil }
 
-        let secs = buf.withUnsafeBytes { $0.load(fromByteOffset: 4, as: Int64.self) }
+        let secs = buf.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: Int64.self) }
         if secs == 0 { return nil }
-        let nsecs = buf.withUnsafeBytes { $0.load(fromByteOffset: 12, as: Int64.self) }
+        let nsecs = buf.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 12, as: Int64.self) }
         return Date(timeIntervalSince1970: Double(secs) + Double(nsecs) / 1_000_000_000)
     }
 
@@ -226,7 +226,7 @@ public enum ConditionEvaluator {
         return formatter.date(from: value.trimmingCharacters(in: .whitespaces))
     }
 
-    /// Parses a relative duration ("30 days", "2 weeks", "6 months", "1 years")
+    /// Parses a relative duration ("2 hours", "30 days", "2 weeks", "6 months", "1 years")
     /// into the cutoff instant `now - duration`. Months/years use calendar arithmetic.
     private static func cutoffDate(_ value: String) -> Date? {
         let s = value.trimmingCharacters(in: .whitespaces)
@@ -238,6 +238,7 @@ public enum ConditionEvaluator {
         let now = Date()
         var component: Calendar.Component
         switch unitPart {
+        case "hour", "hours": component = .hour
         case "day", "days": component = .day
         case "week", "weeks": component = .weekOfYear
         case "month", "months": component = .month

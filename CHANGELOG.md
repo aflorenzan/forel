@@ -3,6 +3,14 @@
 All notable changes to Forel are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- Date conditions now support hours, with an "is not in the last" option for excluding recently added, created, or modified files.
+
+### Fixed
+- Date Added conditions no longer crash when reading a file's timestamp.
+
 ## [1.1.0] - 2026-10-22
 
 ### Added

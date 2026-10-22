@@ -104,6 +104,7 @@ import SQLite3
         rule.conditions = [
             makeCondition(.createdAt, .withinLast, "7 weeks", ruleId: rule.id),
             makeCondition(.dateModified, .before, "2026-06-17", ruleId: rule.id),
+            makeCondition(.dateAdded, .olderThan, "2 hours", ruleId: rule.id),
             makeCondition(.sizeBytes, .greaterThan, "12 MB", ruleId: rule.id),
             makeCondition(.kind, .isNot, "archive", ruleId: rule.id),
         ]
@@ -111,9 +112,9 @@ import SQLite3
 
         let loaded = try #require(db.listRules(folderId: folder.id).first)
         #expect(loaded.recursionDepth == 3)
-        #expect(loaded.conditions.map(\.kind) == [.createdAt, .dateModified, .sizeBytes, .kind])
-        #expect(loaded.conditions.map(\.operator) == [.withinLast, .before, .greaterThan, .isNot])
-        #expect(loaded.conditions.map(\.value) == ["7 weeks", "2026-06-17", "12 MB", "archive"])
+        #expect(loaded.conditions.map(\.kind) == [.createdAt, .dateModified, .dateAdded, .sizeBytes, .kind])
+        #expect(loaded.conditions.map(\.operator) == [.withinLast, .before, .olderThan, .greaterThan, .isNot])
+        #expect(loaded.conditions.map(\.value) == ["7 weeks", "2026-06-17", "2 hours", "12 MB", "archive"])
 
         loaded.conditions.forEach { condition in
             #expect(condition.ruleId == rule.id)

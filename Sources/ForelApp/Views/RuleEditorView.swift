@@ -652,12 +652,13 @@ private struct AbsoluteDateValueEditor: View {
 
 private struct RelativeDateValueEditor: View {
     @Binding var value: String
+    private let units = ["hours", "days", "weeks", "months", "years"]
 
     var body: some View {
         HStack(spacing: 8) {
             GlassField(placeholder: "7", text: numberBinding)
                 .frame(width: 72)
-            StringSelectMenu(selection: unitBinding, options: ["days", "weeks", "months", "years"])
+            StringSelectMenu(selection: unitBinding, options: units)
             .frame(width: 120)
             Spacer(minLength: 0)
         }
@@ -681,7 +682,7 @@ private struct RelativeDateValueEditor: View {
         let pieces = value.split(separator: " ", maxSplits: 1).map(String.init)
         let number = pieces.first?.filter(\.isNumber)
         let unit = pieces.count > 1 ? pieces[1] : "days"
-        return ((number?.isEmpty == false ? number! : "7"), ["days", "weeks", "months", "years"].contains(unit) ? unit : "days")
+        return ((number?.isEmpty == false ? number! : "7"), units.contains(unit) ? unit : "days")
     }
 }
 

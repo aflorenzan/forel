@@ -44,7 +44,7 @@ public extension Operator {
         case .lessThan: return "less than"
         case .before: return "is before"
         case .after: return "is after"
-        case .olderThan: return "is older than"
+        case .olderThan: return "is not in the last"
         case .withinLast: return "is within the last"
         }
     }

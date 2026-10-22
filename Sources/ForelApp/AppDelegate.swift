@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// The main window was asked for before it existed (Forel started as a
     /// login item); bring it forward as soon as SwiftUI has created it.
     private var activatesMainWindowWhenAttached = false
+    private var licenseApplied = false
 
     /// `@NSApplicationDelegateAdaptor` requires a zero-argument initializer;
     /// the app's model/updater are handed in afterward once SwiftUI has
@@ -66,7 +67,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.applyDockIconPreference()
         setUpStatusBar()
         showMainWindowOnFirstLaunch()
+        applyLicense()
+    }
 
+    /// Hands the license to the model once, at launch. Not tied to the main
+    /// window: started as a login item, Forel has none until the user opens
+    /// it, and a Pro license must not be treated as Free until then.
+    private func applyLicense() {
+        guard !licenseApplied, let model else { return }
+        licenseApplied = true
         model.setLicenseAccessLimited(!license.hasAccess)
         // `dropFirst()` skips the state already accounted for above, so a
         // fresh subscriber doesn't double-apply the state it was created
@@ -142,6 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         model?.applyDockIconPreference()
         setUpStatusBar()
+        applyLicense()
     }
 
     /// Opening Forel straight from the mounted installer disk image (before

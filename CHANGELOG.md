@@ -3,7 +3,7 @@
 All notable changes to Forel are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.1.0] - 2026-10-22
 
 ### Added
 - Right-clicking a watched folder in the sidebar now offers Show in Finder.
